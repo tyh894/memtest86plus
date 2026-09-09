@@ -10,7 +10,7 @@
  * Copyright (C) 2004-2026 Sam Demeulemeester.
  */
 
-#define MAX_SPD_SLOT    8
+#define MAX_SPD_SLOT    32
 #define SPD_SKU_LEN     32
 
 /* DDR5 SPD Hub Configuration Registers */
@@ -30,9 +30,10 @@
 typedef struct spd_infos {
     bool        isValid;
     uint8_t     slot_num;
+    char        slot_name[32];
     uint16_t    jedec_code;
     uint32_t    module_size;
-    char        type[6];    // inline, not a pointer: the BSS cache has no reloc records to rebase it
+    char        *type;    // inline, not a pointer: the BSS cache has no reloc records to rebase it
     char        sku[SPD_SKU_LEN + 1];
     uint8_t     XMP;
     uint16_t    freq;
@@ -56,7 +57,7 @@ typedef struct ram_infos {
     uint16_t    tRCD;
     uint16_t    tRP;
     uint16_t    tRAS;
-    char        type[6];
+    char        *type;;
 } ram_info_t;
 
 typedef struct {
@@ -70,7 +71,7 @@ extern ram_info_t ram;
 extern ram_slot_info_t ram_slot_info[MAX_SPD_SLOT];
 extern spd_info spd_slot_cache[MAX_SPD_SLOT];
 
-void print_spdi(spd_info spdi, uint8_t lidx);
+void print_spdi(spd_info spdi, uint8_t row);
 void parse_spd(spd_info *spdi, uint8_t slot_idx);
 
 /**

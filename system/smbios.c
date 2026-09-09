@@ -15,7 +15,8 @@
 #include "spd.h"
 #include "smbios.h"
 
-#define LINE_DMI 23
+#include "screen.h"
+#define LINE_DMI (SCREEN_HEIGHT - 3)
 
 static const uint8_t *table_start = NULL;
 static uint32_t table_length = 0; // 16-bit in SMBIOS v2, 32-bit in SMBIOS v3.
@@ -28,11 +29,19 @@ static const efi_guid_t SMBIOS3_GUID = { 0xf2fd1544, 0x9794, 0x4a2c, {0x99, 0x2e
 struct system_info *dmi_system_info;
 struct baseboard_info *dmi_baseboard_info;
 struct mem_dev *dmi_memory_device;  // no static initialiser: reloc() would rebase it (see reloc64.c)
+
+struct mem_dev *dmi_memory_devices[MAX_DMI_MEM_DEVS];
+int dmi_memory_device_count = 0;
+int dmi_total_memory_slots = 0;
+
+#define MAX_DMI_MEM_MAPS 64
+struct mem_dev_map *dmi_memory_device_maps[MAX_DMI_MEM_MAPS];
+int dmi_memory_device_map_count = 0;
+
 struct cpu_info *dmi_cpu_info;
 
 uint8_t dmi_memory_device_type;
 
-struct mem_dev *dmi_memory_devices[MAX_DMI_MEM_DEVICES];
 int dmi_num_memory_devices = 0;
 
 // Cached copies of board manufacturer and product name, saved at boot
@@ -67,6 +76,62 @@ static char *get_tstruct_string(struct tstruct_header *header, uint16_t maxlen, 
     return NULL;
 }
 
+char *smbios_get_string(struct tstruct_header *header, int n)
+{
+    if (header == NULL || table_start == NULL) {
+        return NULL;
+    }
+    uint16_t struct_length = table_length - ((uint8_t *)header - (uint8_t *)table_start);
+    return get_tstruct_string(header, struct_length, n);
+}
+
+char *smbios_get_dimm_by_address(uint64_t addr)
+{
+    for (int i = 0; i < dmi_memory_device_map_count; i++) {
+        struct mem_dev_map *md_map = dmi_memory_device_maps[i];
+        uint64_t start = md_map->start_addr;
+        uint64_t end = md_map->end_addr;
+        
+        if (start == 0xFFFFFFFF) {
+            start = md_map->ext_start_addr;
+            end = md_map->ext_end_addr;
+        } else {
+            start = start * 1024ULL;
+            end = end * 1024ULL;
+        }
+        
+        if (addr >= start && addr <= end) {
+            uint16_t handle = md_map->mem_dev_handle;
+            for (int j = 0; j < dmi_memory_device_count; j++) {
+                struct mem_dev *md = dmi_memory_devices[j];
+                if (md->header.handle == handle) {
+                    char *dev_loc = smbios_get_string(&md->header, md->dev_locator);
+                    char *bank_loc = smbios_get_string(&md->header, md->bank_locator);
+                    if (dev_loc && (strncmp(dev_loc, "NO DIMM", 7) == 0 || strncmp(dev_loc, "Unknown", 7) == 0)) {
+                        dev_loc = NULL;
+                    }
+                    if (dev_loc) {
+                        static char dimm_name_buf[32];
+                        int n = 0;
+                        if (bank_loc) {
+                            while (*bank_loc && n < (int)sizeof(dimm_name_buf) - 2) {
+                                dimm_name_buf[n++] = *bank_loc++;
+                            }
+                            dimm_name_buf[n++] = ' ';
+                        }
+                        while (*dev_loc && n < (int)sizeof(dimm_name_buf) - 1) {
+                            dimm_name_buf[n++] = *dev_loc++;
+                        }
+                        dimm_name_buf[n] = '\0';
+                        return dimm_name_buf;
+                    }
+                    return NULL;
+                }
+            }
+        }
+    }
+    return NULL;
+}
 #if (ARCH_BITS == 64)
 static uintptr_t find_in_efi64_system_table(efi64_system_table_t *system_table, const efi_guid_t *guid)
 {
@@ -172,6 +237,13 @@ static int parse_dmi(uint16_t numstructs)
             // Multiple type 2 structs are allowed by the standard. Effectively pick up the last one.
             dmi_baseboard_info = (struct baseboard_info *) dmi;
         }
+        // Type 16 - Physical Memory Array
+        else if (header->type == 16 && header->length >= 15) {
+            uint16_t num_slots = *(uint16_t *)(dmi + 13);
+            if (num_slots > dmi_total_memory_slots) {
+                dmi_total_memory_slots = num_slots;
+            }
+        }
         // Type 4 - Processor Information
         else if (header->type == 4 && header->length > offsetof(struct cpu_info, version)) {
             // One struct per socket; keep the first populated one.
@@ -180,19 +252,21 @@ static int parse_dmi(uint16_t numstructs)
             }
         }
         // Type 17 - Memory Device
-        else if (header->type == 17 && header->length > offsetof(struct mem_dev, partnum)) {
-            struct mem_dev *mdev = (struct mem_dev *) dmi;
-            // Multiple type 17 structs are allowed, with unpopulated slots sometimes
-            // reported as type 2 (unknown). If type is 0 (uninitialized) or 1/2 (previously
-            // initialized with unknown value) => set or overwrite the struct
-            if (dmi_memory_device_type <= 2) {
-                dmi_memory_device = mdev;
-                dmi_memory_device_type = mdev->type;
+        else if (header->type == 17 && header->length >= 21) {
+            struct mem_dev *md = (struct mem_dev *)dmi;
+            if (dmi_memory_device_count < MAX_DMI_MEM_DEVS) {
+                dmi_memory_devices[dmi_memory_device_count++] = md;
             }
-            // Collect every populated device (size 0 means empty socket,
-            // 0xFFFF means populated with unknown size, so keep the latter).
-            if (mdev->size != 0 && dmi_num_memory_devices < MAX_DMI_MEM_DEVICES) {
-                dmi_memory_devices[dmi_num_memory_devices++] = mdev;
+            // Keep the old logic for dmi_memory_device for compatibility
+            if (dmi_memory_device == NULL || dmi_memory_device->type <= 2) {
+                dmi_memory_device = md;
+            }
+        }
+        // Type 20 - Memory Device Mapped Address
+        else if (header->type == 20 && header->length >= 19) {
+            struct mem_dev_map *md_map = (struct mem_dev_map *)dmi;
+            if (dmi_memory_device_map_count < MAX_DMI_MEM_MAPS) {
+                dmi_memory_device_maps[dmi_memory_device_map_count++] = md_map;
             }
         }
 
@@ -429,9 +503,8 @@ void print_smbios_startup_info(void)
                 sl2 = strlen(sys_sku);
 
                 if (sl1 && sl2) {
-                    dmicol = 40 - ((sl1 + sl2) / 2);
-                    dmicol = prints(LINE_DMI, dmicol, sys_man);
-                    prints(LINE_DMI, dmicol + 1, sys_sku);
+                    // The DMI board info line above the footer is no longer
+                    // displayed, but the strings are still cached for reports.
 
                     // Cache copies for later use (memory tests overwrite SMBIOS data).
                     int len1 = sl1 < DMI_STRING_MAX - 1 ? sl1 : DMI_STRING_MAX - 1;

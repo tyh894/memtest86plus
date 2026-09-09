@@ -1,5 +1,9 @@
 #ifndef _SERIAL_REG_H
 #define _SERIAL_REG_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 /**
  * \file
  *
@@ -195,4 +199,7 @@ void tty_send_region(int start_row, int start_col, int end_row, int end_col);
 
 char tty_get_char(int max_wait_frames);
 
+void direct_send_string(const char *str);
+void serial_send_bytes(const uint8_t *data, size_t len);
+void serial_poll_rx(void);
 #endif /* _SERIAL_REG_H */

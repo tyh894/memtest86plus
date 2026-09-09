@@ -371,7 +371,6 @@ typedef struct {
 
     // State needed to rescan the root ports after initialisation.
     uint8_t             num_ports;
-    uint8_t             msd_port;   // 1-based root port owning the found drive, 0 if none
     uint8_t             port_type[XHCI_MAX_PORTS];
 } workspace_t  __attribute__ ((aligned (64)));
 
@@ -1156,13 +1155,9 @@ static bool scan_for_msd(const usb_hcd_t *hcd)
 
         uint32_t port_status = read32(&op_regs->port_regs[port_idx].sc);
 
-        // Skip ports owned by a previous scan, unless unplugged/replugged  or hosting a since-forgotten drive
+        // Skip ports owned by a device found during a previous scan, unless it was unplugged.
         if (ws->port_type[port_idx] & PORT_TYPE_IN_USE) {
-            if (ws->msd_port == 1 + port_idx) {
-                ws->msd_port = 0;
-            } else if ((port_status & (XHCI_PORT_SC_CCS | XHCI_PORT_SC_PED)) == (XHCI_PORT_SC_CCS | XHCI_PORT_SC_PED)) {
-                continue;
-            }
+            if (port_status & XHCI_PORT_SC_CCS) continue;
             ws->port_type[port_idx] &= ~PORT_TYPE_IN_USE;
         }
 
@@ -1195,7 +1190,6 @@ static bool scan_for_msd(const usb_hcd_t *hcd)
         if (find_attached_usb_keyboards(hcd, &root_hub, 1 + port_idx, device_speed, slot_id,
                                         &num_devices, keyboards, 0, &num_keyboards)) {
             ws->port_type[port_idx] |= PORT_TYPE_IN_USE;
-            ws->msd_port = 1 + port_idx;
             return true;
         }
 
@@ -1498,13 +1492,9 @@ bool xhci_probe(uintptr_t base_addr, usb_hcd_t *hcd)
         if (slot_id == 0) break;
 
         // Look for keyboards attached directly or indirectly to this port.
-        bool port_msd_before = usb_mass_storage_found;
         if (find_attached_usb_keyboards(hcd, &root_hub, 1 + port_idx, device_speed, slot_id,
                                         &num_devices, keyboards, MAX_KEYBOARDS, &num_keyboards)) {
             ws->port_type[port_idx] |= PORT_TYPE_IN_USE;
-            if (usb_mass_storage_found && !port_msd_before) {
-                ws->msd_port = 1 + port_idx;
-            }
             continue;
         }
 

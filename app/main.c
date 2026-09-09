@@ -46,6 +46,7 @@
 #include "badram.h"
 #include "config.h"
 #include "display.h"
+#include "dongle.h"
 #include "error.h"
 #include "reports.h"
 #include "test.h"
@@ -92,7 +93,8 @@ static uintptr_t        high_load_addr;
 static barrier_t        *start_barrier = NULL;
 
 static bool             start_run  = false;
-static bool             start_pass = false;
+bool                    start_pass = false;
+int                     testpass = 0; // 1=Pass, 2=Fail
 static bool             start_test = false;
 static bool             rerun_test = false;
 
@@ -127,7 +129,13 @@ int         vm_map_size = 0;
 uint32_t    proximity_domains[MAX_CPUS];
 
 int         pass_num = 0;
+int         max_pass_num = 1;
+bool        continue_on_error = false; // Stop on first error by default
+int test_num_index = 0;
+// int test_sequence[] = {10,9,8,7,6,5,4,3,2,1,0};
+int test_sequence[NUM_TEST_PATTERNS] = {0,1,2,3,4,5,6,7,8,9,10,11};
 int         test_num = 0;
+int         test_time = 0;
 
 int         window_num = 0;
 
@@ -346,6 +354,9 @@ static void global_init(void)
     initial_config();
 
     clear_message_area();
+    dongle_init();
+    // dongle_send_time_packet();
+
 
     if (!smp_enabled) {
         num_available_cpus = 1;
@@ -649,6 +660,7 @@ static void test_all_windows(int my_cpu)
                 // Either there is no PAE or we are at the PAE limit.
                 break;
             }
+            // printf(17,5, "%u", test_num);
             run_test(my_cpu, test_num, test_stage, iterations);
         }
 
@@ -673,6 +685,7 @@ static void select_next_master(void)
 
 void main(void)
 {
+    test_num = test_sequence[test_num_index];
     int my_cpu;
     if (init_state == 0) {
         // If this is the first time here, we must be CPU 0, as the APs haven't been started yet.
@@ -737,7 +750,9 @@ void main(void)
                 }
             }
             if (start_pass) {
-                test_num = 0;
+                // test_num = 0;
+                test_num_index = 0;
+                test_num = test_sequence[test_num_index];
                 start_test = true;
                 if (dummy_run) {
                     ticks_per_pass[pass_num] = 0;
@@ -827,7 +842,9 @@ void main(void)
         }
 
         start_test = true;
-        test_num++;
+        // test_num++;
+        test_num_index++;
+        test_num = test_sequence[test_num_index];
         if (test_num < NUM_TEST_PATTERNS) {
             continue;
         }
@@ -846,10 +863,29 @@ void main(void)
         if (!dummy_run) {
             display_pass_count(pass_num);
             if (error_count == 0) {
-                display_status("Pass   ");
-                display_big_status(true);
+                if (pass_num >= max_pass_num)
+                {
+                    testpass = 1;
+                    display_status("Pass   ");
+                    display_big_status(true);
+                    while (1)
+                    {
+                        usleep(200);
+                        direct_send_string("HEROSYS_PASS");
+                        check_input();
+                    }
+                }
+                
+                // break;
             } else {
+                testpass = 2;
                 display_big_status(false);
+                 while (1)
+                {
+                    usleep(200);
+                    direct_send_string("HEROSYS_FAIL");
+                    check_input();
+                }
             }
         }
     }

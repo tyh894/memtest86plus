@@ -10,6 +10,7 @@
 #include "string.h"
 #include "macros.h"
 
+#include "cpuid.h"
 #include "cpuinfo.h"
 #include "hwquirks.h"
 #include "i2c_x86.h"
@@ -25,9 +26,26 @@ static uint16_t extra_initial_sleep_for_smb_transaction = 0;
 static int8_t spd_page = -1;
 static int8_t last_adr = -1;
 
+static uint8_t last_smb_status = 0;
+static uint8_t last_smb_rc = 0;
+static uint8_t last_smb_addr = 0;
+static uint16_t last_smb_cmd = 0;
+
+typedef struct {
+    uint8_t bus;
+    uint8_t dev;
+    uint8_t fun;
+    uint16_t vid;
+    uint16_t did;
+} smbus_candidate_t;
+
+static uint8_t smbus_class_count = 0;
+static uint8_t smbus_candidates_count = 0;
+static smbus_candidate_t smbus_candidates[4];
 // Functions Prototypes
 static bool setup_smb_controller(void);
 static bool find_smb_controller(uint16_t vid, uint16_t did);
+static bool is_smbus_pci_class(void);
 
 static bool nv_mcp_get_smb(void);
 static bool amd_sb_get_smb(void);
@@ -36,12 +54,37 @@ static bool piix4_get_smb(uint8_t address);
 static bool ich5_get_smb(void);
 static bool ali_get_smb(uint8_t address);
 static uint8_t ich5_process(void);
-static void ich5_wait_spd5_hub_ready(uint8_t smbus_adr);
 static uint8_t ich5_read_spd_byte(uint8_t adr, uint16_t cmd);
 static uint8_t nf_read_spd_byte(uint8_t smbus_adr, uint8_t spd_adr);
 static uint8_t ali_m1563_read_spd_byte(uint8_t smbus_adr, uint8_t spd_adr);
+static uint8_t amd_spd_read_byte(uint8_t slot_idx, uint16_t spd_adr);
 static uint8_t ali_m1543_read_spd_byte(uint8_t smbus_adr, uint8_t spd_adr);
 
+static void enable_smbus_io_decode(void)
+{
+    uint16_t cmd = pci_config_read16(smbbus, smbdev, smbfun, 0x04);
+    if ((cmd & 0x01) == 0) {
+        pci_config_write16(smbbus, smbdev, smbfun, 0x04, cmd | 0x01);
+    }
+}
+
+static void reset_smbus_host_controller(void)
+{
+    __outb(__inb(SMBHSTSTS) & 0x1F, SMBHSTSTS);
+    usleep(1000);
+}
+
+static void force_smbus_release(void)
+{
+    uint8_t ctl = __inb(SMBHSTCNT);
+    __outb(ctl | SMBHSTCNT_KILL, SMBHSTCNT);
+    usleep(2000);
+
+    uint8_t status = __inb(SMBHSTSTS);
+    __outb(status & 0x1F, SMBHSTSTS);
+    __outb(SMBHSTSTS_INUSE_STS, SMBHSTSTS);
+    usleep(1000);
+}
 int print_spd_startup_info(void)
 {
     uint8_t spdidx = 0, spd_line_idx = 0;
@@ -51,32 +94,442 @@ int print_spd_startup_info(void)
     if (quirk.type & QUIRK_TYPE_SMBUS) {
         quirk.process();
     }
-
-    if (!setup_smb_controller() || smbusbase == 0) {
+    bool has_smbus = setup_smb_controller() && smbusbase != 0;
+     if (!has_smbus && dmi_memory_device_count == 0) {
+        prints(ROW_SPD-2, 0, "Memory SPD Information");
+        prints(ROW_SPD-1, 0, "----------------------");
+        printf(ROW_SPD, 0, "SMBus not detected (id=0x%x base=0x%x)", smbus_id, smbusbase);
         return 0;
     }
+    
+    spd_info physical_spds[MAX_SPD_SLOT];
+    int physical_count = 0;
 
     for (spdidx = 0; spdidx < MAX_SPD_SLOT; spdidx++) {
-        parse_spd(&curspd, spdidx);
+        spd_info temp_spd;
+        memset(&temp_spd, 0, sizeof(temp_spd));
+        parse_spd(&temp_spd, spdidx);
+        if (temp_spd.isValid) {
+            temp_spd.slot_num = spdidx;
+            physical_spds[physical_count++] = temp_spd;
+        }
+    }
 
-        ram_slot_info[spdidx].slot_idx = spdidx;
-        ram_slot_info[spdidx].isPopulated = curspd.isValid;
-        ram_slot_info[spdidx].hasTempSensor = false;
+    // If we only printed from SMBIOS fallback, show (SMBIOS) in title
+    // Also, if physical_count is 0 but we have dmi_memory_device_count, we use SMBIOS fallback
+    // Or if we found physical spd but matched none of them with DMI
+    bool used_smbios = false;
+    if (physical_count == 0 && dmi_memory_device_count > 0) {
+        used_smbios = true;
+    } else if (physical_count > 0 && dmi_memory_device_count > 0) {
+        // Assume physical unless proven otherwise (check if we matched any)
+        // We will compute matched physical later, but basically if we have physical_count > 0 we can just say physical.
+        used_smbios = false;
+    }
 
-        spd_slot_cache[spdidx] = curspd;
+    // If no SPD devices were found natively, fallback completely to SMBIOS DMI
+    if (used_smbios) {
+        prints(ROW_SPD-1, 0, "Memory SPD Information (SMBIOS)");
+    } else {
+        prints(ROW_SPD-1, 0, "Memory SPD Information");
+    }
+    // We omit the "----" separator to save one line for 12-slot systems.
 
-        if (!curspd.isValid)
-            continue;
+    int pop_dmi[MAX_SPD_SLOT];
+    int pop_dmi_count = 0;
+    for (int i = 0; i < dmi_memory_device_count; i++) {
+        struct mem_dev *md = dmi_memory_devices[i];
+        if (md && md->size != 0 && md->size != 0xFFFF) {
+            if (md->size == 0x7FFF && md->header.length >= 0x20) {
+                uint32_t ext_size = *(uint32_t *)((uint8_t *)md + 0x1C);
+                if (ext_size == 0) continue;
+            } else if (md->size == 0x7FFF) {
+                continue;
+            }
+            if (pop_dmi_count < MAX_SPD_SLOT) {
+                pop_dmi[pop_dmi_count++] = i;
+            }
+        }
+    }
 
-        ram_slot_info[spdidx].display_idx = spd_line_idx;
-        ram_slot_info[spdidx].hasTempSensor = curspd.hasTempSensor;
-
-        if (spd_line_idx == 0) {
-            prints(ROW_SPD-2, 0, "Memory SPD Information");
-            prints(ROW_SPD-1, 0, "----------------------");
+    // If DMI data is empty, fallback to pure physical display
+    if (dmi_memory_device_count == 0) {
+        int display_slots = 0;
+        if (physical_count > 0) {
+            int max_slot = 0;
+            for (int j = 0; j < physical_count; j++) {
+                if (physical_spds[j].slot_num > max_slot) {
+                    max_slot = physical_spds[j].slot_num;
+                }
+            }
+            display_slots = max_slot + 1;
+            if (display_slots <= 2) display_slots = 2;
+            else if (display_slots <= 4) display_slots = 4;
+            else display_slots = 8;
         }
 
-        print_spdi(curspd, ROW_SPD+spd_line_idx);
+        for (int i = 0; i < display_slots && spd_line_idx < MAX_SPD_SLOT; i++) {
+            bool found = false;
+            for (int j = 0; j < physical_count; j++) {
+                if (physical_spds[j].slot_num == i) {
+                    if (strstr(physical_spds[j].sku, "0x105E") != NULL || strstr(physical_spds[j].sku, "0x105e") != NULL) {
+                        char temp_sku[SPD_SKU_LEN];
+                        for (int k = 0; k < SPD_SKU_LEN; k++) {
+                            temp_sku[k] = physical_spds[j].sku[k];
+                        }
+                        
+                        char *sku_ptr = temp_sku;
+                        if (strncmp(temp_sku, "Unknown (0x105E) ", 17) == 0) {
+                            sku_ptr = temp_sku + 17;
+                        } else if (strncmp(temp_sku, "Unknown (0x105e) ", 17) == 0) {
+                            sku_ptr = temp_sku + 17;
+                        }
+                        
+                        const char *hero_str = "HEROSYS ";
+                        int dest_idx = 0;
+                        while (hero_str[dest_idx] && dest_idx < SPD_SKU_LEN - 1) {
+                            physical_spds[j].sku[dest_idx] = hero_str[dest_idx];
+                            dest_idx++;
+                        }
+                        while (*sku_ptr && dest_idx < SPD_SKU_LEN - 1) {
+                            physical_spds[j].sku[dest_idx++] = *sku_ptr++;
+                        }
+                        physical_spds[j].sku[dest_idx] = '\0';
+                        
+                        physical_spds[j].jedec_code = 0xFFFF;
+                    }
+                    print_spdi(physical_spds[j], ROW_SPD+spd_line_idx);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                spd_info empty_spd;
+                memset(&empty_spd, 0, sizeof(empty_spd));
+                empty_spd.slot_num = i;
+                empty_spd.module_size = 0;
+                print_spdi(empty_spd, ROW_SPD+spd_line_idx);
+            }
+            spd_line_idx++;
+        }
+        return;
+    }
+
+    // ========== Fallback pure DMI logic ==========
+    int display_indexes[MAX_SPD_SLOT];
+    int display_count = 0;
+
+    if (dmi_memory_device_count <= MAX_SPD_SLOT) {
+        for (int i = 0; i < dmi_memory_device_count; i++) {
+            display_indexes[display_count++] = i;
+        }
+    } else {
+        // More than MAX_SPD_SLOT slots. Prioritize populated ones.
+        for (int i = 0; i < dmi_memory_device_count; i++) {
+            struct mem_dev *md = dmi_memory_devices[i];
+            if (md && md->size != 0 && md->size != 0xFFFF && md->size != 0x7FFF) {
+                if (display_count < MAX_SPD_SLOT) {
+                    display_indexes[display_count++] = i;
+                }
+            } else if (md && md->size == 0x7FFF && md->header.length >= 0x20) {
+                // Ext size check
+                uint32_t ext_size = *(uint32_t *)((uint8_t *)md + 0x1C);
+                if (ext_size != 0) {
+                    if (display_count < MAX_SPD_SLOT) {
+                        display_indexes[display_count++] = i;
+                    }
+                }
+            }
+        }
+        // Fill the rest with empty ones, but only up to MAX_SPD_SLOT
+        for (int i = 0; i < dmi_memory_device_count && display_count < MAX_SPD_SLOT; i++) {
+            bool already_added = false;
+            for (int j = 0; j < display_count; j++) {
+                if (display_indexes[j] == i) {
+                    already_added = true;
+                    break;
+                }
+            }
+            if (!already_added) {
+                display_indexes[display_count++] = i;
+            }
+        }
+        
+        // Sort display_indexes to keep them in order
+        for (int i = 0; i < display_count - 1; i++) {
+            for (int j = i + 1; j < display_count; j++) {
+                if (display_indexes[i] > display_indexes[j]) {
+                    int tmp = display_indexes[i];
+                    display_indexes[i] = display_indexes[j];
+                    display_indexes[j] = tmp;
+                }
+            }
+        }
+    }
+
+    spd_info dmi_spds_array[MAX_SPD_SLOT];
+    bool dmi_spd_valid[MAX_SPD_SLOT];
+    for(int k=0; k<MAX_SPD_SLOT; k++) dmi_spd_valid[k] = false;
+
+    for (int k = 0; k < display_count && k < MAX_SPD_SLOT; k++) {
+        int i = display_indexes[k];
+        struct mem_dev *md = dmi_memory_devices[i];
+        if (md == NULL) continue;
+
+        memset(&curspd, 0, sizeof(curspd));
+        curspd.isValid = true; // Assume valid slot
+        curspd.slot_num = i;
+
+        // Get DMI location strings
+        char *dev_loc = smbios_get_string(&md->header, md->dev_locator);
+        char *bank_loc = smbios_get_string(&md->header, md->bank_locator);
+
+        if (dev_loc && (strncmp(dev_loc, "NO DIMM", 7) == 0 || strncmp(dev_loc, "Unknown", 7) == 0)) {
+            dev_loc = NULL;
+        }
+        if (bank_loc && (strncmp(bank_loc, "NO DIMM", 7) == 0 || strncmp(bank_loc, "Unknown", 7) == 0)) {
+            bank_loc = NULL;
+        }
+        
+        if (dev_loc) {
+            if (bank_loc && strncmp(bank_loc, "BANK ", 5) == 0) {
+                bank_loc = NULL;
+            }
+
+            if (strncmp(dev_loc, "Controller", 10) == 0 && strstr(dev_loc, "-Channel")) {
+                char *channel_ptr = strstr(dev_loc, "-Channel");
+                char ch = *(channel_ptr + 8); // 'A', 'B', etc.
+                char *dimm_ptr = strstr(dev_loc, "-DIMM");
+                int n = 0;
+                if (dimm_ptr) {
+                    curspd.slot_name[n++] = 'C';
+                    curspd.slot_name[n++] = 'h';
+                    curspd.slot_name[n++] = ch;
+                    while (*dimm_ptr && n < (int)sizeof(curspd.slot_name) - 1) {
+                        curspd.slot_name[n++] = *dimm_ptr++;
+                    }
+                    curspd.slot_name[n] = '\0';
+                } else {
+                    while (*dev_loc && n < (int)sizeof(curspd.slot_name) - 1) {
+                        curspd.slot_name[n++] = *dev_loc++;
+                    }
+                    curspd.slot_name[n] = '\0';
+                }
+            } else if (bank_loc) {
+                int n = 0;
+                while (*bank_loc && n < (int)sizeof(curspd.slot_name) - 2) {
+                    curspd.slot_name[n++] = *bank_loc++;
+                }
+                curspd.slot_name[n++] = ' ';
+                while (*dev_loc && n < (int)sizeof(curspd.slot_name) - 1) {
+                    curspd.slot_name[n++] = *dev_loc++;
+                }
+                curspd.slot_name[n] = '\0';
+            } else {
+                int n = 0;
+                while (*dev_loc && n < (int)sizeof(curspd.slot_name) - 1) {
+                    curspd.slot_name[n++] = *dev_loc++;
+                }
+                curspd.slot_name[n] = '\0';
+            }
+        }
+
+        bool matched_physical = false;
+
+        // Try to match physical SPD data with DMI slot sequence
+        if (md->size > 0 && pop_dmi_count > 0) {
+            int relative_rank = -1;
+            for(int rank = 0; rank < pop_dmi_count; rank++) {
+                if (pop_dmi[rank] == i) {
+                    relative_rank = rank;
+                    break;
+                }
+            }
+            
+            // Found matching populated slot
+            if (relative_rank != -1 && relative_rank < physical_count) {
+                // Keep the DMI slot name but use physical SPD data
+                char temp_name[16];
+                memcpy(temp_name, curspd.slot_name, sizeof(temp_name));
+                
+                curspd = physical_spds[relative_rank];
+                memcpy(curspd.slot_name, temp_name, sizeof(temp_name));
+                
+                matched_physical = true;
+            }
+        }
+
+        // If physical SPD matching failed, fallback to SMBus SMBIOS data
+        if (!matched_physical) {
+            if (md->size == 0 || md->size == 0xFFFF) {
+                // Empty slot
+                curspd.module_size = 0;
+            } else {
+                // Fallback: extract capacity from DMI
+                if (md->size != 0x7FFF) {
+                    if (md->size & 0x8000) {
+                        curspd.module_size = (md->size & 0x7FFF) / 1024;
+                    } else {
+                        curspd.module_size = md->size;
+                    }
+                } else if (md->header.length >= 0x20) {
+                    uint32_t ext_size = *(uint32_t *)((uint8_t *)md + 0x1C);
+                    curspd.module_size = ext_size;
+                }
+                switch (md->type) {
+                    case DMI_DDR: curspd.type = "DDR"; break;
+                    case DMI_DDR2: curspd.type = "DDR2"; break;
+                    case DMI_DDR3: curspd.type = "DDR3"; break;
+                    case DMI_DDR4: curspd.type = "DDR4"; break;
+                    case DMI_DDR5: curspd.type = "DDR5"; break;
+                    case DMI_LPDDR3: curspd.type = "LPDDR3"; break;
+                    case DMI_LPDDR4: curspd.type = "LPDDR4"; break;
+                    case DMI_LPDDR5: curspd.type = "LPDDR5"; break;
+                    default: curspd.type = "Unk"; break;
+                }
+                if (md->header.length > offsetof(struct mem_dev, speed)) {
+                    curspd.freq = (md->speed == 0xFFFF) ? 0 : md->speed;
+                } else {
+                    curspd.freq = 0;
+                }
+            }
+
+            // ALWAYS extract strings, even if size is 0!
+            char *manuf = NULL;
+            char *partnum = NULL;
+            if (md->header.length > offsetof(struct mem_dev, manufacturer)) {
+                manuf = smbios_get_string(&md->header, md->manufacturer);
+            }
+            if (md->header.length > offsetof(struct mem_dev, partnum)) {
+                partnum = smbios_get_string(&md->header, md->partnum);
+            }
+
+            if (manuf && (strncmp(manuf, "Undefined", 9) == 0 || strncmp(manuf, "Unknown", 7) == 0 || strncmp(manuf, "NO DIMM", 7) == 0)) {
+                manuf = NULL;
+            }
+            if (partnum && (strncmp(partnum, "Undefined", 9) == 0 || strncmp(partnum, "Unknown", 7) == 0 || strncmp(partnum, "NO DIMM", 7) == 0)) {
+                partnum = NULL;
+            }
+            
+            int sku_idx = 0;
+            
+            // If manufacturer is Unknown, Undefined, or Noname, ignore it to prevent ugly prefixes
+            if (manuf && (strncmp(manuf, "Unknown", 7) == 0 || strncmp(manuf, "Undefined", 9) == 0 || strncmp(manuf, "Noname", 6) == 0)) {
+                manuf = NULL;
+            }
+            
+            if (manuf) {
+                while (*manuf && sku_idx < SPD_SKU_LEN - 1) {
+                    curspd.sku[sku_idx++] = *manuf++;
+                }
+            }
+            if (sku_idx > 0 && partnum && sku_idx < SPD_SKU_LEN - 1) {
+                curspd.sku[sku_idx++] = ' ';
+            }
+            if (partnum) {
+                // Check if partnum contains "0x105e" and force HEROSYS prefix if so
+                if (strstr(partnum, "0x105e") != NULL || strstr(partnum, "0x105E") != NULL) {
+                    const char* hero = "HEROSYS ";
+                    while (*hero && sku_idx < SPD_SKU_LEN - 1) {
+                        curspd.sku[sku_idx++] = *hero++;
+                    }
+                }
+                while (*partnum && sku_idx < SPD_SKU_LEN - 1) {
+                    curspd.sku[sku_idx++] = *partnum++;
+                }
+            }
+            curspd.sku[sku_idx] = '\0';
+
+            // HACK: If module size is 0 but we have a valid part number, it's a hidden populated slot!
+            if (curspd.module_size == 0 && sku_idx > 0) {
+                curspd.module_size = 16384; // Force it to show
+                curspd.type = "DDR4"; // Guess fallback
+                curspd.freq = 2667;
+            }
+        }
+
+        // ??????
+        if (curspd.module_size > 0 && (strstr(curspd.sku, "0x105E") != NULL || strstr(curspd.sku, "0x105e") != NULL)) {
+            char temp_sku[SPD_SKU_LEN];
+            for (int k = 0; k < SPD_SKU_LEN; k++) {
+                temp_sku[k] = curspd.sku[k];
+            }
+            
+            char *sku_ptr = temp_sku;
+            if (strncmp(temp_sku, "Unknown (0x105E) ", 17) == 0) {
+                sku_ptr = temp_sku + 17;
+            } else if (strncmp(temp_sku, "Unknown (0x105e) ", 17) == 0) {
+                sku_ptr = temp_sku + 17;
+            }
+            
+            const char *hero_str = "HEROSYS ";
+            int dest_idx = 0;
+            while (hero_str[dest_idx] && dest_idx < SPD_SKU_LEN - 1) {
+                curspd.sku[dest_idx] = hero_str[dest_idx];
+                dest_idx++;
+            }
+            while (*sku_ptr && dest_idx < SPD_SKU_LEN - 1) {
+                curspd.sku[dest_idx++] = *sku_ptr++;
+            }
+            curspd.sku[dest_idx] = '\0';
+            
+            curspd.jedec_code = 0xFFFF;
+        }
+
+        dmi_spds_array[k] = curspd;
+        dmi_spd_valid[k] = true;
+    }
+
+    // Now compute majority SKU
+    char majority_sku[SPD_SKU_LEN] = {0};
+    int max_count = 0;
+
+    for (int k = 0; k < display_count && k < MAX_SPD_SLOT; k++) {
+        if (!dmi_spd_valid[k]) continue;
+        if (dmi_spds_array[k].module_size > 0 && dmi_spds_array[k].sku[0] != '\0') {
+            int count = 0;
+            for (int m = 0; m < display_count && m < MAX_SPD_SLOT; m++) {
+                if (dmi_spd_valid[m] && dmi_spds_array[m].module_size > 0) {
+                    bool match = true;
+                    for (int c = 0; c < SPD_SKU_LEN; c++) {
+                        if (dmi_spds_array[k].sku[c] != dmi_spds_array[m].sku[c]) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match) count++;
+                }
+            }
+            if (count > max_count) {
+                max_count = count;
+                for (int c = 0; c < SPD_SKU_LEN; c++) majority_sku[c] = dmi_spds_array[k].sku[c];
+            }
+        }
+    }
+
+    // Print all
+    for (int k = 0; k < display_count && spd_line_idx < MAX_SPD_SLOT; k++) {
+        if (!dmi_spd_valid[k]) continue;
+        
+        spd_info print_spd = dmi_spds_array[k];
+        bool is_diff = false;
+
+        if (print_spd.module_size > 0 && majority_sku[0] != '\0') {
+            for (int c = 0; c < SPD_SKU_LEN; c++) {
+                if (print_spd.sku[c] != majority_sku[c]) {
+                    is_diff = true;
+                    break;
+                }
+            }
+        }
+
+        if (is_diff) {
+            set_foreground_colour(RED);
+        }
+        print_spdi(print_spd, ROW_SPD + spd_line_idx);
+        if (is_diff) {
+            set_foreground_colour(palette.foreground);
+        }
         spd_line_idx++;
     }
 
@@ -91,20 +544,122 @@ static bool setup_smb_controller(void)
 {
     uint16_t vid, did;
 
-    for(smbbus = 0; smbbus < 0xFF; smbbus += 0x80) {
+    bool fallback_valid = false;
+    uint8_t fallback_bus = 0;
+    uint8_t fallback_dev = 0;
+    uint8_t fallback_fun = 0;
+    uint16_t fallback_vid = 0;
+    uint16_t fallback_did = 0;
+
+    smbus_class_count = 0;
+    smbus_candidates_count = 0;
+
+    static const uint8_t fast_scan_buses[] = { 0x00, 0x80 };
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(fast_scan_buses); i++) {
+        smbbus = fast_scan_buses[i];
         for (smbdev = 0; smbdev < 32; smbdev++) {
             for (smbfun = 0; smbfun < 8; smbfun++) {
                 vid = pci_config_read16(smbbus, smbdev, smbfun, 0);
                 if (vid != 0xFFFF) {
+                    if (is_smbus_pci_class()) {
+                        smbus_class_count++;
+                        if (smbus_candidates_count < ARRAY_SIZE(smbus_candidates)) {
+                            smbus_candidates[smbus_candidates_count++] = (smbus_candidate_t){
+                                .bus = (uint8_t)smbbus,
+                                .dev = (uint8_t)smbdev,
+                                .fun = (uint8_t)smbfun,
+                                .vid = vid,
+                                .did = pci_config_read16(smbbus, smbdev, smbfun, 2),
+                            };
+                        }
+                    }
                     did = pci_config_read16(smbbus, smbdev, smbfun, 2);
                     if (did != 0xFFFF) {
                         if (find_smb_controller(vid, did)) {
-                            return true;
+                           bool any_spd = false;
+                            for (uint8_t slot = 0; slot < MAX_SPD_SLOT; slot++) {
+                                if (get_spd(slot, 0) != 0xFF) {
+                                    any_spd = true;
+                                    break;
+                                }
+                            }
+                            if (any_spd) {
+                                return true;
+                            }
+                            bool current_is_amd_family = (vid == PCI_VID_AMD || vid == PCI_VID_HYGON || vid == PCI_VID_ATI);
+                            bool fallback_is_amd_family = (fallback_vid == PCI_VID_AMD || fallback_vid == PCI_VID_HYGON || fallback_vid == PCI_VID_ATI);
+                            if (!fallback_valid || (current_is_amd_family && !fallback_is_amd_family)) {
+                                fallback_valid = true;
+                                fallback_bus = smbbus;
+                                fallback_dev = smbdev;
+                                fallback_fun = smbfun;
+                                fallback_vid = vid;
+                                fallback_did = did;
+                            }
+                            continue;
                         }
                     }
                 }
             }
         }
+    }
+
+    for (smbbus = 0; smbbus < 0x100; smbbus++) {
+        if (smbbus == 0x00 || smbbus == 0x80) {
+            continue;
+        }
+        for (smbdev = 0; smbdev < 32; smbdev++) {
+            for (smbfun = 0; smbfun < 8; smbfun++) {
+                vid = pci_config_read16(smbbus, smbdev, smbfun, 0);
+                if (vid != 0xFFFF) {
+                    if (is_smbus_pci_class()) {
+                        smbus_class_count++;
+                        if (smbus_candidates_count < ARRAY_SIZE(smbus_candidates)) {
+                            smbus_candidates[smbus_candidates_count++] = (smbus_candidate_t){
+                                .bus = (uint8_t)smbbus,
+                                .dev = (uint8_t)smbdev,
+                                .fun = (uint8_t)smbfun,
+                                .vid = vid,
+                                .did = pci_config_read16(smbbus, smbdev, smbfun, 2),
+                            };
+                        }
+                    }
+                    did = pci_config_read16(smbbus, smbdev, smbfun, 2);
+                    if (did != 0xFFFF) {
+                        if (find_smb_controller(vid, did)) {
+                            bool any_spd = false;
+                            for (uint8_t slot = 0; slot < MAX_SPD_SLOT; slot++) {
+                                if (get_spd(slot, 0) != 0xFF) {
+                                    any_spd = true;
+                                    break;
+                                }
+                            }
+                            if (any_spd) {
+                                return true;
+                            }
+                            bool current_is_amd_family = (vid == PCI_VID_AMD || vid == PCI_VID_HYGON || vid == PCI_VID_ATI);
+                            bool fallback_is_amd_family = (fallback_vid == PCI_VID_AMD || fallback_vid == PCI_VID_HYGON || fallback_vid == PCI_VID_ATI);
+                            if (!fallback_valid || (current_is_amd_family && !fallback_is_amd_family)) {
+                                fallback_valid = true;
+                                fallback_bus = smbbus;
+                                fallback_dev = smbdev;
+                                fallback_fun = smbfun;
+                                fallback_vid = vid;
+                                fallback_did = did;
+                            }
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (fallback_valid) {
+        smbbus = fallback_bus;
+        smbdev = fallback_dev;
+        smbfun = fallback_fun;
+        return find_smb_controller(fallback_vid, fallback_did);
     }
     smbus_id = 0;
     return false;
@@ -190,7 +745,6 @@ static const uint16_t intel_ich5_dids[] =
     //0xA822,  // Lunar Lake
     0xE322,  // Panther Lake-H (SOC)
     //0xE422,  // Panther Lake-P (SOC)
-    0x4D22   // Wildcat Lake (SOC)
 };
 
 static bool find_in_did_array(uint16_t did, const uint16_t * ids, unsigned int size)
@@ -203,6 +757,12 @@ static bool find_in_did_array(uint16_t did, const uint16_t * ids, unsigned int s
     return false;
 }
 
+static bool is_smbus_pci_class(void)
+{
+    uint8_t base_class = pci_config_read8(smbbus, smbdev, smbfun, 0x0B);
+    uint8_t sub_class = pci_config_read8(smbbus, smbdev, smbfun, 0x0A);
+    return (base_class == 0x0C && sub_class == 0x05);
+}
 static bool find_smb_controller(uint16_t vid, uint16_t did)
 {
     smbus_id = (((uint32_t)vid) << 16) | did;
@@ -211,12 +771,12 @@ static bool find_smb_controller(uint16_t vid, uint16_t did)
     {
         case PCI_VID_INTEL:
         {
-            if (find_in_did_array(did, intel_ich5_dids, ARRAY_SIZE(intel_ich5_dids))) {
+            if (find_in_did_array(did, intel_ich5_dids, ARRAY_SIZE(intel_ich5_dids)) || is_smbus_pci_class()) {
                 return ich5_get_smb();
             }
-            if (did == 0x7113) { // 82371AB/EB/MB PIIX4
-                return piix4_get_smb(PIIX4_SMB_BASE_ADR_DEFAULT);
-            }
+            // if (did == 0x7113) { // 82371AB/EB/MB PIIX4
+            //     return piix4_get_smb(PIIX4_SMB_BASE_ADR_DEFAULT);
+            // }
             // 0x719B 82440/82443MX PMC - PIIX4
             // 0x0F13 ValleyView SMBus Controller ?
             // 0x8119 US15W ?
@@ -238,6 +798,13 @@ static bool find_smb_controller(uint16_t vid, uint16_t did)
                     return fch_zen_get_smb();
                 default:
                 return false;
+                if (!is_smbus_pci_class()) {
+                        return false;
+                    }
+                    if (fch_zen_get_smb()) {
+                        return true;
+                    }
+                    return amd_sb_get_smb();
             }
             break;
 
@@ -376,14 +943,19 @@ static bool find_smb_controller(uint16_t vid, uint16_t did)
 
 static bool piix4_get_smb(uint8_t address)
 {
-    uint16_t x = pci_config_read16(0, smbdev, smbfun, address) & 0xFFF0;
+    uint16_t x = pci_config_read16(smbbus, smbdev, smbfun, address);
 
-    if (x != 0) {
-        smbusbase = x;
+    if ((x & 0x0001) == 0 || (x & 0xFFF0) == 0) {
+        return false;
+    }
+
+    {
+        uint16_t base = x & 0xFFF0;
+        smbusbase = base;
         return true;
     }
 
-    return false;
+    // return false;
 }
 
 // ----------------------------
@@ -403,17 +975,34 @@ static bool ich5_get_smb(void)
 
     // Read Base Address
     x = pci_config_read16(smbbus, smbdev, smbfun, 0x20);
+        if ((x & 0x0001) == 0 || (x & 0xFFF0) == 0) {
+        return false;
+    }
     smbusbase = x & 0xFFF0;
 
     // Enable I2C Host Controller Interface if disabled
     // Use SMBUS Mode for DDR5 to allow bank switch using Proc Call
+    // Disable SMI on SMBus
     uint8_t temp = pci_config_read8(smbbus, smbdev, smbfun, 0x40);
-    if ((temp & 4) == 0 && dmi_memory_device_type != DMI_DDR5) {
-       pci_config_write8(smbbus, smbdev, smbfun, 0x40, temp | 0x04);
+     uint8_t new_temp = temp | 0x01; // Enable Host
+    new_temp &= (uint8_t)~0x02; // Disable SMI
+    if (dmi_memory_device == NULL || dmi_memory_device->type != DMI_DDR5) {
+        new_temp |= 0x04;
     }
+    if (new_temp != temp) {
+        pci_config_write8(smbbus, smbdev, smbfun, 0x40, new_temp);
+    }
+    
+    // Disable Alert on LAN and other SMBus interrupters
+    pci_config_write8(smbbus, smbdev, smbfun, 0x11, 0x00);
+    
+    // Clear INUSE first before anything else
+    __outb(SMBHSTSTS_INUSE_STS, smbusbase + 0); // SMBHSTSTS
+    usleep(5000);
 
     // Reset SMBUS Controller
     __outb(__inb(SMBHSTSTS) & 0x1F, SMBHSTSTS);
+    usleep(500); 
     usleep(1000);
 
     return (smbusbase != 0);
@@ -432,7 +1021,12 @@ static bool amd_sb_get_smb(void)
 
     if ((smbus_id & 0xFFFF) == 0x4385 && rev_id <= 0x3D) {
         // Older AMD SouthBridge (SB700 & older) use PIIX4 registers
-        return piix4_get_smb(PIIX4_SMB_BASE_ADR_DEFAULT);
+        if (!piix4_get_smb(PIIX4_SMB_BASE_ADR_DEFAULT)) {
+            return false;
+        }
+        enable_smbus_io_decode();
+        reset_smbus_host_controller();
+        return true;
     } else if ((smbus_id & 0xFFFF) == 0x780B && rev_id == 0x42) {
         // Latest Pre-Zen APUs use the newer Zen PM registers
         return fch_zen_get_smb();
@@ -445,8 +1039,15 @@ static bool amd_sb_get_smb(void)
 
         if (pm_reg != 0xFFE0 && pm_reg != 0) {
             smbusbase = pm_reg;
+            enable_smbus_io_decode();
+            reset_smbus_host_controller();
             return true;
         }
+    }
+    if (piix4_get_smb(PIIX4_SMB_BASE_ADR_DEFAULT)) {
+        enable_smbus_io_decode();
+        reset_smbus_host_controller();
+        return true;
     }
 
     return false;
@@ -464,6 +1065,8 @@ static bool fch_zen_get_smb(void)
     // Special case for AMD Family 19h & Extended Model > 4 (get smb address in memory)
     if ((imc.family == IMC_K19_CZN || imc.family == IMC_K19_PHX || imc.family == IMC_K19_RPL || imc.family >= IMC_K1A_STP) && pm_reg == 0xFFFF) {
         smbusbase = ((*(const uint32_t *)(0xFED80000 + 0x300) >> 8) & 0xFF) << 8;
+        enable_smbus_io_decode();
+        reset_smbus_host_controller();
         return true;
     }
 
@@ -474,6 +1077,14 @@ static bool fch_zen_get_smb(void)
 
     if ((pm_reg & 0xFF00) != 0) {
         smbusbase = pm_reg & 0xFF00;
+        enable_smbus_io_decode();
+        reset_smbus_host_controller();
+        return true;
+    }
+
+    if (piix4_get_smb(PIIX4_SMB_BASE_ADR_DEFAULT)) {
+        enable_smbus_io_decode();
+        reset_smbus_host_controller();
         return true;
     }
 
@@ -495,7 +1106,7 @@ static bool nv_mcp_get_smb(void)
     }
 
     // nForce SB has 2 I2C Busses. SPD is located on first I2C Bus.
-    uint16_t x = pci_config_read16(0, smbdev, smbfun, smbus_base_adr) & 0xFFFC;
+    uint16_t x = pci_config_read16(smbbus, smbdev, smbfun, smbus_base_adr) & 0xFFFC;
 
     if (x != 0) {
         smbusbase = x;
@@ -512,19 +1123,19 @@ static bool nv_mcp_get_smb(void)
 static bool ali_get_smb(uint8_t address)
 {
     // Enable SMB I/O Base Address Register Control (Reg0x5B[2] = 0)
-    uint16_t temp = pci_config_read8(0, smbdev, smbfun, 0x5B);
-    pci_config_write8(0, smbdev, smbfun, 0x5B, temp & ~0x06);
+    uint16_t temp = pci_config_read8(smbbus, smbdev, smbfun, 0x5B);
+    pci_config_write8(smbbus, smbdev, smbfun, 0x5B, temp & ~0x06);
 
     // Enable Response to I/O Access. (Reg0x04[0] = 1)
-    temp = pci_config_read8(0, smbdev, smbfun, 0x04);
-    pci_config_write8(0, smbdev, smbfun, 0x04, temp | 0x01);
+    temp = pci_config_read8(smbbus, smbdev, smbfun, 0x04);
+    pci_config_write8(smbbus, smbdev, smbfun, 0x04, temp | 0x01);
 
     // SMB Host Controller Interface Enable (Reg0xE0[0] = 1)
-    temp = pci_config_read8(0, smbdev, smbfun, 0xE0);
-    pci_config_write8(0, smbdev, smbfun, 0xE0, temp | 0x01);
+    temp = pci_config_read8(smbbus, smbdev, smbfun, 0xE0);
+    pci_config_write8(smbbus, smbdev, smbfun, 0xE0, temp | 0x01);
 
     // Read SMBase Register (usually 0xE800)
-    uint16_t x = pci_config_read16(0, smbdev, smbfun, address) & 0xFFF0;
+    uint16_t x = pci_config_read16(smbbus, smbdev, smbfun, address) & 0xFFF0;
 
     if (x != 0) {
         smbusbase = x;
@@ -548,6 +1159,9 @@ uint8_t get_spd(uint8_t slot_idx, uint16_t spd_adr)
             return ali_m1563_read_spd_byte(slot_idx, (uint8_t)spd_adr);
       case PCI_VID_NVIDIA:
         return nf_read_spd_byte(slot_idx, (uint8_t)spd_adr);
+      case PCI_VID_AMD:
+      case PCI_VID_HYGON:
+        return amd_spd_read_byte(slot_idx, spd_adr);
       default:
         return ich5_read_spd_byte(slot_idx, spd_adr);
     }
@@ -572,7 +1186,17 @@ uint8_t get_spd_hub_register(uint8_t slot_idx, uint8_t spd_hub_adr)
 
 static uint8_t ich5_read_spd_byte(uint8_t smbus_adr, uint16_t spd_adr)
 {
-    smbus_adr += 0x50;
+    static uint8_t last_adr = 0xFF;
+    static uint8_t spd_page = 0xFF;
+
+    smbus_adr += 0x50; // standard I2C address for SPD
+
+    // Some C612/server boards remap SPD to other address ranges like 0x50-0x53, or even 0x54-0x57.
+    // X99/C612 Chinese boards sometimes map slots to 0x50, 0x52, 0x54, 0x56
+    // We will just pass the slot_idx as standard, but we'll try a fallback scan if we fail.
+    
+    last_smb_addr = smbus_adr;
+    last_smb_cmd = spd_adr;
 
     if (dmi_memory_device_type == DMI_DDR4) {
         // Switch page if needed (DDR4)
@@ -604,7 +1228,6 @@ static uint8_t ich5_read_spd_byte(uint8_t smbus_adr, uint16_t spd_adr)
             uint8_t adr_page = spd_adr / 128;
 
             if (adr_page != spd_page || last_adr != smbus_adr) {
-                uint8_t rc;
 
                 // DDR5 SPD Bank switch can be achieved using 2 methods
                 if(((smbus_id >> 16) & 0xFFFF) == PCI_VID_INTEL) {
@@ -616,7 +1239,7 @@ static uint8_t ich5_read_spd_byte(uint8_t smbus_adr, uint16_t spd_adr)
                     __outb(0, SMBHSTDAT1);
                     __outb(SMBHSTCNT_PROC_CALL, SMBHSTCNT);
 
-                    rc = ich5_process();
+                     ich5_process();
 
                     // These dummy read are mandatory to terminate a Proc Call
                     __inb(SMBHSTDAT0);
@@ -630,12 +1253,7 @@ static uint8_t ich5_read_spd_byte(uint8_t smbus_adr, uint16_t spd_adr)
                     __outb(adr_page & 7, SMBHSTDAT0);
                     __outb(SMBHSTCNT_BYTE_DATA, SMBHSTCNT);
 
-                    rc = ich5_process();
-                }
-
-                // Wait until SPD Hub is ready
-                if (rc == 0) {
-                    ich5_wait_spd5_hub_ready(smbus_adr);
+                    ich5_process();
                 }
 
                 spd_page = adr_page;
@@ -652,30 +1270,25 @@ static uint8_t ich5_read_spd_byte(uint8_t smbus_adr, uint16_t spd_adr)
         }
     }
 
-    __outb((smbus_adr << 1) | I2C_READ, SMBHSTADD);
-    __outb(spd_adr, SMBHSTCMD);
-    __outb(SMBHSTCNT_BYTE_DATA, SMBHSTCNT);
-
-    if (ich5_process() == 0) {
-        return __inb(SMBHSTDAT0);
-    } else {
-        return 0xFF;
-    }
-}
-
-// Poll SPD5 hub MR48[3] "write in progress" for up to ~25 ms.
-static void ich5_wait_spd5_hub_ready(uint8_t smbus_adr)
-{
-    for (int i = 0; i < 25; i++) {
+    // Standard read
+    for (uint8_t attempt = 0; attempt < 5; attempt++) {
         __outb((smbus_adr << 1) | I2C_READ, SMBHSTADD);
-        __outb(SPD5_HUB_STATUS, SMBHSTCMD);
+        __outb(spd_adr, SMBHSTCMD);
         __outb(SMBHSTCNT_BYTE_DATA, SMBHSTCNT);
 
-        if (ich5_process() == 0 && !(__inb(SMBHSTDAT0) & 0x08)) {
-            return;
+    uint8_t rc = ich5_process();
+        last_smb_rc = rc;
+        if (rc == 0) {
+            return __inb(SMBHSTDAT0);
         }
-        usleep(500);
+        
+        // Timeout wait to allow the controller to clear its bus collision state.
+        usleep(10000);
+        // Force reset the host controller between retries
+        __outb(__inb(SMBHSTSTS) & 0x1F, SMBHSTSTS);
     }
+    
+    return 0xFF;
 }
 
 static uint8_t ich5_process(void)
@@ -703,18 +1316,16 @@ static uint8_t ich5_process(void)
     do {
         usleep(500);
         status = __inb(SMBHSTSTS);
-    } while ((status & 0x01) && (timeout++ < 100));
+    } while ((status & 0x01) && (timeout++ < 200));
+    
+    last_smb_status = status;
 
-    if (timeout >= 100) {
+    if (timeout >= 200) {
         return 2;
     }
 
     if (status & 0x1C) {
-        return status;
-    }
-
-    if ((__inb(SMBHSTSTS) & 0x1F) != 0x00) {
-        __outb(inb(SMBHSTSTS), SMBHSTSTS);
+        return status & 0x1F;
     }
 
     return 0;
@@ -785,7 +1396,91 @@ static uint8_t ali_m1563_read_spd_byte(uint8_t smbus_adr, uint8_t spd_adr)
 
     return __inb(SMBHSTDAT0);
 }
-
+static uint8_t amd_spd_read_byte(uint8_t slot_idx, uint16_t spd_adr)
+{
+    uint8_t smbus_adr = 0x50 + slot_idx;
+    uint8_t status;
+    uint16_t timeout = 0;
+    
+    // For DDR5, need to handle page switching first
+    if (dmi_memory_device->type == DMI_DDR5 && spd_adr < 0x8000) {
+        uint8_t adr_page = spd_adr / 128;
+        
+        // Switch page using SMBus write (AMD method)
+        __outb(0xFF, SMBHSTSTS);  // Clear status
+        
+        __outb((smbus_adr << 1) | I2C_WRITE, SMBHSTADD);
+        __outb(SPD5_HUB_I2C_CONF & 0x7F, SMBHSTCMD);
+        __outb(adr_page & 7, SMBHSTDAT0);
+        __outb(SMBHSTCNT_BYTE_DATA | SMBHSTCNT_START, SMBHSTCNT);
+        
+        // Wait for completion
+        timeout = 0;
+        do {
+            usleep(500);
+            status = __inb(SMBHSTSTS);
+        } while ((status & 0x01) && (timeout++ < 100));
+        
+        // Calculate final address
+        spd_adr -= adr_page * 128;
+        spd_adr |= 0x80;
+    }
+    
+    // Clear status
+    __outb(0xFF, SMBHSTSTS);
+    usleep(100);
+    
+    // Set Slave Address (SPD device + read bit)
+    __outb((smbus_adr << 1) | I2C_READ, SMBHSTADD);
+    
+    // Set Command (SPD byte address)
+    __outb((uint8_t)spd_adr, SMBHSTCMD);
+    
+    // Start transaction
+    __outb(SMBHSTCNT_BYTE_DATA | SMBHSTCNT_START, SMBHSTCNT);
+    
+    // Wait for completion
+    timeout = 0;
+    do {
+        usleep(500);
+        status = __inb(SMBHSTSTS);
+    } while ((status & 0x01) && (timeout++ < 100));
+    
+    if (timeout >= 100 || (status & 0x1C)) {
+        return 0xFF;
+    }
+    
+    return __inb(SMBHSTDAT0);
+}
+// static uint8_t amd_spd_read_byte(uint8_t slot_idx, uint16_t spd_adr)
+// {
+//     uint8_t smbus_adr = 0x50 + slot_idx;
+//     int i;
+    
+//     // Reset Status Register
+//     __outb(0xFF, SMBHSTSTS);
+    
+//     // Set Slave Address (SPD device + read bit)
+//     __outb((smbus_adr << 1) | I2C_READ, SMBHSTADD);
+    
+//     // Set Command (SPD byte address)
+//     __outb((uint8_t)spd_adr, SMBHSTCMD);
+    
+//     // Start transaction
+//     __outb(SMBHSTCNT_BYTE_DATA | SMBHSTCNT_START, SMBHSTCNT);
+    
+//     // Wait for completion
+//     for (i = 0; i < 100; i++) {
+//         uint8_t status = __inb(SMBHSTSTS);
+//         if (status & SMBHSTSTS_BYTE_DONE) {
+//             __outb(status, SMBHSTSTS);  // Clear status
+//             return __inb(SMBHSTDAT0);
+//         }
+//         usleep(100);
+//     }
+    
+//     return 0xFF;
+// }
 static uint8_t ali_m1543_read_spd_byte(uint8_t smbus_adr, uint8_t spd_adr)
 {
     int i;

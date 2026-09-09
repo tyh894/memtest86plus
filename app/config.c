@@ -40,6 +40,9 @@
 #include "tests.h"
 
 #include "config.h"
+#include "usbmsd.h"
+#include "fat32.h"
+#include "heap.h"
 
 //------------------------------------------------------------------------------
 // Constants
@@ -50,7 +53,7 @@
 #define POP_R       3
 #define POP_C       21
 
-#define POP_W       38
+#define POP_W       45
 #define POP_H       18
 
 #define POP_LAST_R  (POP_R + POP_H - 1)
@@ -104,14 +107,14 @@ bool            enable_bench       = true;
 bool            enable_mch_read    = true;
 bool            enable_numa        = false;
 
-bool            enable_ecc_polling = false;
+bool            enable_ecc_polling = true;
 
 bool            pause_at_start     = true;
-bool            dark_mode          = false;
+bool            dark_mode          = true;
 
 power_save_t    power_save         = POWER_SAVE_HIGH;
 
-bool            enable_tty         = false;
+bool            enable_tty         = true;
 bool            enable_tty_log     = false;             // Machine-parseable serial log instead of interactive console
 int             log_max_passes     = 0;                 // Reboot after N passes in log mode (0 = unlimited)
 uintptr_t       tty_address        = 0x3F8;             // Legacy IO or MMIO Address accepted
@@ -478,8 +481,8 @@ static void display_error_message(int row, const char *message)
 static void display_selection_header(int row, int max_num, int offset)
 {
     int i;
-
-    prints(row, POP_LM, "Current selection:");
+    prints(row, POP_LM-2, "Current selection:");
+    prints(row, POP_LM+18, "Current sequence:");
     if (max_num >= SEL_AREA) {
         prints(row, POP_LM+18, "  (scroll U D)");
         printc(row, POP_LM+28, 0x18);
@@ -516,10 +519,10 @@ static void display_enabled(int row, int n, bool enabled)
 
 static bool set_all_tests(bool enabled)
 {
-    clear_popup_row(POP_R+14);
+    clear_popup_row(POP_R+15);
     for (int i = 0; i < NUM_TEST_PATTERNS; i++) {
         test_list[i].enabled = enabled;
-        display_enabled(POP_R+12, i, enabled);
+        display_enabled(POP_R+13, i, enabled);
     }
     return true;
 }
@@ -527,40 +530,104 @@ static bool set_all_tests(bool enabled)
 static bool add_or_remove_test(bool add)
 {
 
-    display_input_message(POP_R+14, "Enter test #");
-    int n = read_value(POP_R+14, POP_LM+12, 2, 0);
+    display_input_message(POP_R+15, "Enter test #");
+    int n = read_value(POP_R+15, POP_LM+12, 2, 0);
     if (n < 0 || n >= NUM_TEST_PATTERNS) {
-        display_error_message(POP_R+14, "Invalid test number");
+        display_error_message(POP_R+15, "Invalid test number");
         return false;
     }
     test_list[n].enabled = add;
-    display_enabled(POP_R+12, n, add);
-    clear_popup_row(POP_R+14);
+    display_enabled(POP_R+13, n, add);
+    clear_popup_row(POP_R+15);
+    return true;
+}
+extern bool start_pass;
+extern int test_sequence[NUM_TEST_PATTERNS];
+static bool display_sequence()
+{
+    for (int i = 0; i < NUM_TEST_PATTERNS; i++) {
+    int num = test_sequence[i];
+    int col = POP_LM + 18 + 2*i;
+    
+    // ????
+    printf(POP_R+12, col, "%u", (num >= 10) ? (0 + num/10) : 0);
+    
+    // ??????
+    printf(POP_R+12, col+1, "%u", 0 + (num % 10));
+    }
     return true;
 }
 
+static bool set_all_sequence()
+{
+    int test[NUM_TEST_PATTERNS];
+    for (int i = 0; i < NUM_TEST_PATTERNS; i++) test[i] = 255;
+
+    // display_input_message(POP_R+15, "Enter sequence #");
+    for(int i = 0;i<NUM_TEST_PATTERNS;i++)
+    {
+        // display_input_message(POP_R+15, "Enter sequence %u#",i);
+        clear_popup_row(POP_R+15);
+        printf(POP_R+15, POP_LM, "Enter sequence %u#",i);
+        // if (enable_tty) tty_send_region(POP_REGION);
+        // direct_send_string("set_all_sequence");
+        int value = read_value(POP_R+15, POP_LM+12+7, 2, 0);
+        if ( value < 0 ||  value >= NUM_TEST_PATTERNS) {
+            display_error_message(POP_R+15, "Invalid test number");
+            return false;
+        }
+        for(int j = 0;j<NUM_TEST_PATTERNS;j++)
+        {
+            if(value == test[j])
+            {
+                display_error_message(POP_R+15, "Duplicate test number");
+                return false;
+            }
+        }
+        test[i] = value;
+        
+    }
+    for(int i = 0;i<NUM_TEST_PATTERNS;i++)
+    {
+        test_sequence[i]=test[i];
+    }
+    clear_popup_row(POP_R+15);
+    display_sequence();
+    
+    return true;
+}
 static bool add_test_range()
 {
-    display_input_message(POP_R+14, "Enter first test #");
-    int n1 = read_value(POP_R+14, POP_LM+18, 2, 0);
+    display_input_message(POP_R+15, "Enter first test #");
+    int n1 = read_value(POP_R+15, POP_LM+18, 2, 0);
     if (n1 < 0 || n1 >= NUM_TEST_PATTERNS) {
-        display_error_message(POP_R+14, "Invalid test number");
+        display_error_message(POP_R+15, "Invalid test number");
         return false;
     }
-    display_input_message(POP_R+14, "Enter last test #");
-    int n2 = read_value(POP_R+14, POP_LM+17, 2, 0);
+    display_input_message(POP_R+15, "Enter last test #");
+    int n2 = read_value(POP_R+15, POP_LM+17, 2, 0);
     if (n2 < n1 || n2 >= NUM_TEST_PATTERNS) {
-        display_error_message(POP_R+14, "Invalid test range");
+        display_error_message(POP_R+15, "Invalid test range");
         return false;
     }
     for (int i = n1; i <= n2; i++) {
         test_list[i].enabled = true;
-        display_enabled(POP_R+12, i, true);
+        display_enabled(POP_R+13, i, true);
     }
-    clear_popup_row(POP_R+14);
+    clear_popup_row(POP_R+15);
     return true;
 }
-
+static void set_test_cycle_times(void)
+{
+    display_input_message(POP_R+15, "Enter test cycle times:");
+    int num = read_value(POP_R+15, POP_LM+24, 5, 0);
+    if (num > 0) {
+        max_pass_num = num;
+        pass_num = 0; // Reset current pass counter
+        printf(POP_R+9, POP_LI, "<F7>  Test cycle times : %u      ", max_pass_num);
+    }
+    clear_popup_row(POP_R+15);
+}
 static void test_selection_menu(void)
 {
     clear_screen_region(POP_REGION);
@@ -570,12 +637,16 @@ static void test_selection_menu(void)
     prints(POP_R+5, POP_LI, "<F3>  Add one test");
     prints(POP_R+6, POP_LI, "<F4>  Add test range");
     prints(POP_R+7, POP_LI, "<F5>  Add all tests");
-    prints(POP_R+8, POP_LI, "<F10> Exit menu");
+    prints(POP_R+8, POP_LI, "<F6>  Set test sequence");
+    printf(POP_R+9, POP_LI, "<F7>  Test cycle times : %u      ", max_pass_num);
+    printf(POP_R+10, POP_LI, "<F8>  Continue on error : %s     ", continue_on_error ? "Yes" : "No ");
+    prints(POP_R+11, POP_LI, "<F10> Exit menu");
 
-    display_selection_header(POP_R+10, NUM_TEST_PATTERNS - 1, 0);
+    display_selection_header(POP_R+12, NUM_TEST_PATTERNS - 1, 0);
     for (int i = 0; i < NUM_TEST_PATTERNS; i++) {
-        display_enabled(POP_R+12, i, test_list[i].enabled);
+        display_enabled(POP_R+13, i, test_list[i].enabled);
     }
+    display_sequence();
 
     bool tty_update = enable_tty;
     bool exit_menu = false;
@@ -603,8 +674,22 @@ static void test_selection_menu(void)
           case '5':
             changed = set_all_tests(true);
             break;
+          case '6':
+            changed = set_all_sequence();
+            start_pass = true;
+            break;
+          case '7':
+            // Set test cycle times
+            set_test_cycle_times();
+            changed = true;
+            break;
+          case '8':
+            // Toggle continue-on-error
+            continue_on_error = !continue_on_error;
+            printf(POP_R+10, POP_LI, "<F8>  Continue on error : %s     ", continue_on_error ? "Yes" : "No ");
+            break;
           case '0': {
-            clear_popup_row(POP_R+14);
+            clear_popup_row(POP_R+15);
             int num_selected = 0;
             for (int i = 0; i < NUM_TEST_PATTERNS; i++) {
                 if (test_list[i].enabled) {
@@ -614,7 +699,7 @@ static void test_selection_menu(void)
             if (num_selected > 0) {
                 exit_menu = true;
             } else {
-                display_error_message(POP_R+14, "You must select at least one test");
+                display_error_message(POP_R+15, "You must select at least one test");
             }
           } break;
           default:
@@ -868,13 +953,13 @@ static bool add_cpu_range(int display_offset)
 
 static void display_cpu_selection(int display_offset)
 {
-    clear_screen_region(POP_R+11, POP_C, POP_LAST_R, POP_LAST_C);
-    display_selection_header(POP_R+10, num_available_cpus - 1, display_offset);
+    clear_screen_region(POP_R+12, POP_C, POP_LAST_R, POP_LAST_C);
+    display_selection_header(POP_R+11, num_available_cpus - 1, display_offset);
     if (display_offset == 0) {
-        printc(POP_R+12, POP_LM, 'B');
+        printc(POP_R+13, POP_LM, 'B');
     }
     for (int i = 1; i < num_available_cpus; i++) {
-        display_enabled(POP_R+12, i - display_offset, cpu_state[i] == CPU_STATE_ENABLED);
+        display_enabled(POP_R+13, i - display_offset, cpu_state[i] == CPU_STATE_ENABLED);
     }
 }
 
@@ -1052,6 +1137,8 @@ void config_menu(bool initial)
             printf(POP_R+9,  POP_LI, "<F7>  RAM Temperature %s", enable_temp_ram ? "disable" : "enable ");
             prints(POP_R+10, POP_LI, "<F8>  Boot options");
             prints(POP_R+11, POP_LI, "<F10> Exit menu");
+            prints(POP_R+12, POP_LI, "< S > Save configuration to USB");
+            prints(POP_R+13, POP_LI, "< D > Restore default config");
         } else {
             prints(POP_R+7,  POP_LI, "<F5>  Skip current test");
             if (usb_mass_storage_found || usb_hcd_available()) {
@@ -1063,8 +1150,12 @@ void config_menu(bool initial)
                     prints(POP_R+8,  POP_LI, "<F6>  Save results to USB");
                 }
                 prints(POP_R+9,  POP_LI, "<F10> Exit menu");
+                prints(POP_R+10, POP_LI, "< S > Save configuration to USB");
+                prints(POP_R+11, POP_LI, "< D > Restore default config");
             } else {
                 prints(POP_R+8,  POP_LI, "<F10> Exit menu");
+                prints(POP_R+9,  POP_LI, "< S > Save configuration to USB");
+                prints(POP_R+10, POP_LI, "< D > Restore default config");
             }
         }
 
@@ -1119,6 +1210,21 @@ void config_menu(bool initial)
           case '0':
             exit_menu = true;
             break;
+          case 'S':
+          case 's':
+            prints(POP_R+14, POP_LM, "Saving config...");
+            save_app_config();
+            clear_popup_row(POP_R+14);
+            break;
+          case 'D':
+          case 'd':
+            prints(POP_R+14, POP_LM, "Restoring defaults...");
+            delete_app_config();
+            // We need to restart to re-apply defaults cleanly
+            clear_message_area();
+            display_notice("Rebooting...");
+            reboot();
+            break;
           default:
             usleep(1000);
             tty_update = false;
@@ -1143,6 +1249,104 @@ void config_menu(bool initial)
     }
 }
 
+void delete_app_config(void)
+{
+    // The drive may have been plugged in after boot - scan for it now.
+    if (!usb_mass_storage_found) {
+        (void)usb_scan_for_msd();
+    }
+
+    usb_msd_t msd;
+    fat32_fs_t fs;
+    
+    if (!usb_mass_storage_found && !usb_hcd_available()) {
+        return;
+    }
+    
+    uintptr_t heap_lm_mark = heap_mark(HEAP_TYPE_LM_1);
+
+    if (!find_usb_mass_storage(&msd)) {
+        goto cleanup;
+    }
+
+    if (!msd_init(&msd)) {
+        goto cleanup;
+    }
+
+    uintptr_t sec_buf_addr = heap_alloc(HEAP_TYPE_LM_1, msd.block_size, 64);
+    if (sec_buf_addr == 0) {
+        goto cleanup;
+    }
+
+    if (!fat32_mount(&fs, &msd, (uint8_t *)sec_buf_addr)) {
+        goto cleanup;
+    }
+
+    fat32_delete_file(&fs, "CONFIG  BIN");
+
+cleanup:
+    usb_rearm_keyboards();
+    heap_rewind(HEAP_TYPE_LM_1, heap_lm_mark);
+}
+
+void save_app_config(void)
+{
+    // The drive may have been plugged in after boot - scan for it now.
+    if (!usb_mass_storage_found) {
+        (void)usb_scan_for_msd();
+    }
+
+    usb_msd_t msd;
+    fat32_fs_t fs;
+    
+    // Quick check to avoid hanging if no USB is found at all
+    if (!usb_mass_storage_found && !usb_hcd_available()) {
+        return;
+    }
+    
+    uintptr_t heap_lm_mark = heap_mark(HEAP_TYPE_LM_1);
+
+    if (!find_usb_mass_storage(&msd)) {
+        goto cleanup;
+    }
+
+    if (!msd_init(&msd)) {
+        goto cleanup;
+    }
+
+    uintptr_t sec_buf_addr = heap_alloc(HEAP_TYPE_LM_1, msd.block_size, 64);
+    if (sec_buf_addr == 0) {
+        goto cleanup;
+    }
+
+    if (!fat32_mount(&fs, &msd, (uint8_t *)sec_buf_addr)) {
+        goto cleanup;
+    }
+
+    const char *cfg_filename = "CONFIG  BIN";
+    app_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg)); // Initialize the struct
+    cfg.magic = APP_CONFIG_MAGIC;
+    cfg.version = APP_CONFIG_VERSION;
+    cfg.max_pass_num = max_pass_num;
+    cfg.continue_on_error = continue_on_error;
+    for (int i = 0; i < NUM_TEST_PATTERNS; i++) {
+        cfg.test_enabled[i] = test_list[i].enabled;
+        cfg.test_sequence[i] = test_sequence[i];
+    }
+    
+    // Overwrite: delete first, then write
+    fat32_delete_file(&fs, cfg_filename);
+    fat32_write_file(&fs, cfg_filename, &cfg, sizeof(cfg));
+
+cleanup:
+    // RE-ARM keyboard! This is critical because USB events can consume TRBs 
+    // and cause the keyboard to stop responding (appear hung)
+    usb_rearm_keyboards();
+    
+    heap_rewind(HEAP_TYPE_LM_1, heap_lm_mark);
+}
+
 void initial_config(void)
 {
     display_initial_notice();
@@ -1150,6 +1354,32 @@ void initial_config(void)
     if (num_available_cpus < 2) {
         smp_enabled = false;
     }
+    
+    // Check U disk for CONFIG.TXT
+    usb_msd_t msd;
+    fat32_fs_t fs;
+    if (find_usb_mass_storage(&msd) && msd_init(&msd)) {
+        uintptr_t sec_buf_addr = heap_alloc(HEAP_TYPE_LM_1, msd.block_size, 64);
+        if (sec_buf_addr != 0) {
+            if (fat32_mount(&fs, &msd, (uint8_t *)sec_buf_addr)) {
+                const char *cfg_filename = "CONFIG  BIN";
+                app_config_t cfg;
+                uint32_t read_size = 0;
+                
+                if (fat32_read_file(&fs, cfg_filename, &cfg, sizeof(cfg), &read_size)) {
+                    if (read_size == sizeof(cfg) && cfg.magic == APP_CONFIG_MAGIC) {
+                        max_pass_num = cfg.max_pass_num;
+                        continue_on_error = cfg.continue_on_error;
+                        for (int i = 0; i < NUM_TEST_PATTERNS; i++) {
+                            test_list[i].enabled = cfg.test_enabled[i];
+                            test_sequence[i] = cfg.test_sequence[i];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if (pause_at_start) {
         bool got_key = false;
         for (int i = 0; i < 3000 && !got_key; i++) {

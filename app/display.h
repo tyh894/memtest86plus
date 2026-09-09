@@ -21,15 +21,15 @@
 
 #include "test.h"
 
-#define ROW_SPD         13
+#define ROW_SPD         10
 
 #define ROW_MESSAGE_T   10
-#define ROW_MESSAGE_B   (SCREEN_HEIGHT - 2)
+#define ROW_MESSAGE_B   (SCREEN_HEIGHT - 4)
 
 #define ROW_SCROLL_T    (ROW_MESSAGE_T + 2)
-#define ROW_SCROLL_B    (SCREEN_HEIGHT - 2)
+#define ROW_SCROLL_B    (SCREEN_HEIGHT - 4)
 
-#define ROW_FOOTER      (SCREEN_HEIGHT - 1)
+#define ROW_FOOTER      (SCREEN_HEIGHT - 2)
 
 #define BAR_LENGTH      40
 
@@ -43,8 +43,9 @@ typedef enum {
     DISPLAY_MODE_IMC
 } display_mode_t;
 
-#define display_cpu_model(str) \
-    prints(0, 30, str)
+// CPU model (e.g. "AMD ...") removed from the title row. Kept as a no-op
+// so call sites stay unchanged (reports still log the CPU model).
+#define display_cpu_model(str)
 
 #define display_cpu_clk(freq) \
     printf(1, 10, "%iMHz", freq)
@@ -88,55 +89,37 @@ typedef enum {
 #define display_status(status) \
     prints(7, 68, status)
 
-#define display_threading(nb, mode) \
-    printf(7,31, "%uT (%s)", nb, mode)
+// CPU / SMP / memory spec info removed from the status line (left side is
+// now occupied by Pass/Errors). Kept as no-ops so call sites stay unchanged.
+#define display_threading(nb, mode)
 
-#define display_threading_disabled() \
-    prints(7,31, "Disabled")
+#define display_threading_disabled()
 
-#define display_cpu_topo_hybrid(num_pcores, num_ecores, num_threads) \
-    { \
-        clear_screen_region(7, 5, 7, 25); \
-        printf(7, 5, "%uP+%uE-Cores (%uT)", num_pcores, num_ecores, num_threads); \
-    }
+#define display_cpu_topo_hybrid(num_pcores, num_ecores, num_threads)
 
-#define display_cpu_topo_hybrid_short(num_threads) \
-    printf(7, 5, "%u Threads (Hybrid)", num_threads)
+#define display_cpu_topo_hybrid_short(num_threads)
 
-#define display_cpu_topo_multi_socket(num_sockets, num_cores, num_threads) \
-    printf(7, 5, "%uS / %uC / %uT", num_sockets, num_cores, num_threads)
+#define display_cpu_topo_multi_socket(num_sockets, num_cores, num_threads)
 
-#define display_cpu_topo( num_cores, num_threads) \
-    printf(7, 5, "%u Cores %u Threads", num_cores, num_threads)
+#define display_cpu_topo( num_cores, num_threads)
 
-#define display_cpu_topo_short( num_cores, num_threads) \
-    printf(7, 5, "%u Cores (%uT)",  num_cores, num_threads)
+#define display_cpu_topo_short( num_cores, num_threads)
 
-#define display_spec_mode(mode) \
-    prints(8,0, mode);
+#define display_spec_mode(mode)
 
-#define display_spec_ddr5(freq, type, cl, cl_dec, rcd, rp, ras) \
-    printf(8,5, "%s-%u / CAS %u%s-%u-%u-%u", \
-                type, freq, cl, cl_dec?".5":"", rcd, rp, ras);
+#define display_spec_ddr5(freq, type, cl, cl_dec, rcd, rp, ras)
 
-#define display_spec_ddr(freq, type, cl, cl_dec, rcd, rp, ras) \
-    printf(8,5, "%uMHz (%s-%u) CAS %u%s-%u-%u-%u", \
-                freq / 2, type, freq, cl, cl_dec?".5":"", rcd, rp, ras);
+#define display_spec_ddr(freq, type, cl, cl_dec, rcd, rp, ras)
 
-#define display_spec_sdr(freq, type, cl, rcd, rp, ras) \
-    printf(8,5, "%uMHz (%s PC%u) CAS %u-%u-%u-%u", \
-                freq, type, freq, cl, rcd, rp, ras);
+#define display_spec_sdr(freq, type, cl, rcd, rp, ras)
 
 #define display_dmi_mb(sys_ma, sys_sku) \
-    dmicol = prints(23, dmicol, sys_man); \
-    prints(23, dmicol + 1, sys_sku);
+    // dmicol = prints(ROW_FOOTER - 1, dmicol, sys_man); \
+    // prints(ROW_FOOTER - 1, dmicol + 1, sys_sku);
 
-#define display_active_cpu(cpu_num) \
-    prints(8, 7, "Core #"); \
-    printi(8, 13, cpu_num, 3, false, true)
+#define display_active_cpu(cpu_num)
 
-#define display_all_active() \
-    prints(8, 7, "All Cores")
+#define display_all_active()
 
 #define display_spinner(spin_state) \
     printc(7, 77, spin_state)
@@ -199,15 +182,15 @@ typedef enum {
     printf(7, 50, "%2i:%02i:%02i", hours, mins, secs)
 
 #define display_pass_count(count) \
-    printi(8, 51, count, 0, false, true)
+    printi(7, 7, count, 0, false, true)
 
 #define display_err_count_without_ecc(count) \
-    printi(8, 68, count, 0, false, true)
+    printi(7, 25, count, 0, false, true)
 
 #define display_err_count_with_ecc(count_err, count_ecc) \
     { \
-        printi(8, 62, count_err, 0, false, true); \
-        printi(8, 74, count_ecc, 0, false, true); \
+        printi(7, 21, count_err, 0, false, true); \
+        printi(7, 33, count_ecc, 0, false, true); \
     }
 
 #define clear_message_area() \
@@ -231,14 +214,14 @@ typedef enum {
 #define clear_footer_message() \
     { \
         set_background_colour(palette.foreground); \
-        clear_screen_region(ROW_FOOTER, 56, ROW_FOOTER, SCREEN_WIDTH - 1); \
+        clear_screen_region(ROW_FOOTER + 1, 0, ROW_FOOTER + 1, SCREEN_WIDTH - 1); \
         set_background_colour(palette.background);  \
     }
 
 #define display_footer_message(str) \
     { \
         set_foreground_colour(palette.footer_foreground);  \
-        prints(ROW_FOOTER, 56, str);  \
+        prints(ROW_FOOTER + 1, 0, str);  \
         set_foreground_colour(palette.footer_background); \
     }
 

@@ -8,8 +8,7 @@
 // regions described by the BIOS/EFI memory map, so all mapping functions
 // simply return the physical address unchanged. RAM is mapped as Normal
 // write-back cacheable memory, the frame buffer as Normal non-cacheable
-// memory, and anything else mapped on demand either as Normal write-back
-// (RAM-resident firmware tables) or as Device-nGnRnE (MMIO).
+// memory, and anything else mapped on demand (MMIO) as Device-nGnRnE.
 //
 // The tables use the 4KB granule with a 48-bit input address range and
 // are built from 1GB and 2MB block descriptors only. paging_init() is
@@ -67,7 +66,6 @@
 typedef struct {
     uint64_t    start;
     uint64_t    end;
-    uint64_t    attrs;
 } device_region_t;
 
 //------------------------------------------------------------------------------
@@ -289,13 +287,13 @@ void paging_init(void)
         paging_incomplete |= !map_range(cmd_line_start, cmd_line_end, PTE_ATTR_NORMAL);
     }
 
-    // Replay the mappings made via map_region.
+    // Replay the device mappings made via map_region.
     for (int i = 0; i < num_device_regions; i++) {
-        paging_incomplete |= !map_range(device_regions[i].start, device_regions[i].end, device_regions[i].attrs);
+        paging_incomplete |= !map_range(device_regions[i].start, device_regions[i].end, PTE_ATTR_DEVICE);
     }
 }
 
-uintptr_t map_region(uintptr_t base_addr, size_t size, bool only_for_startup)
+uintptr_t map_region(uintptr_t base_addr, size_t size, bool only_for_startup __attribute__((unused)))
 {
     if (size == 0) {
         size = 1;
@@ -305,12 +303,6 @@ uintptr_t map_region(uintptr_t base_addr, size_t size, bool only_for_startup)
     if (base_addr + size < base_addr) {
         return 0;
     }
-
-    // Startup-only regions are RAM-resident firmware tables (ACPI, SMBIOS,
-    // ...) and must be mapped as Normal memory: their parsers do unaligned
-    // accesses, which fault on Device memory. Everything else is assumed
-    // to be MMIO. Regions mapped earlier keep their original attributes.
-    uint64_t attrs = only_for_startup ? (PTE_ATTR_NORMAL | PTE_PXN) : PTE_ATTR_DEVICE;
 
     // Record the region (at block granularity) so the mapping can be
     // replayed when the page tables are rebuilt after relocation.
@@ -328,11 +320,13 @@ uintptr_t map_region(uintptr_t base_addr, size_t size, bool only_for_startup)
         }
         device_regions[num_device_regions].start = start;
         device_regions[num_device_regions].end   = end;
-        device_regions[num_device_regions].attrs = attrs;
         num_device_regions++;
     }
 
-    if (!map_range(base_addr, base_addr + size, attrs)) {
+    // Anything not already mapped is assumed to be MMIO and gets a Device
+    // mapping. Regions mapped earlier (e.g. RAM, the frame buffer) keep
+    // their original attributes.
+    if (!map_range(base_addr, base_addr + size, PTE_ATTR_DEVICE)) {
         return 0;
     }
 

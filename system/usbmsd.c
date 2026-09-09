@@ -66,13 +66,6 @@ typedef struct __attribute__((packed)) {
 } usb_csw_t;
 
 //------------------------------------------------------------------------------
-// Private Variables
-//------------------------------------------------------------------------------
-
-// Set when the device processed the last command but rejected it (CHECK CONDITION).
-static bool cmd_rejected = false;
-
-//------------------------------------------------------------------------------
 // Private Functions
 //------------------------------------------------------------------------------
 
@@ -84,14 +77,15 @@ static bool msd_clear_stall(usb_msd_t *msd, const usb_ep_t *ep, bool is_in)
     usb_setup_pkt_t setup_pkt;
     build_setup_packet(&setup_pkt, USB_REQ_TO_ENDPOINT, USB_CLR_FEATURE,
                        USB_ENDPOINT_HALT, ep->endpoint_num | (is_in ? 0x80 : 0), 0);
-    bool ok = hcd->methods->setup_request(hcd, &msd->ep0, &setup_pkt);
+    if (!hcd->methods->setup_request(hcd, &msd->ep0, &setup_pkt)) {
+        return false;
+    }
 
-    // Resync the host toggle even on failure: a mismatched toggle wedges the endpoint.
     if (hcd->methods->reset_bulk_ep != NULL) {
         int ep_id = 2 * ep->endpoint_num + (is_in ? 1 : 0);
-        ok = hcd->methods->reset_bulk_ep(hcd, ep, ep_id) && ok;
+        return hcd->methods->reset_bulk_ep(hcd, ep, ep_id);
     }
-    return ok;
+    return true;
 }
 
 // BOT Reset Recovery (BOT spec 5.3.4): class reset, then clear both bulk endpoints.
@@ -115,8 +109,6 @@ static bool msd_bot_command(usb_msd_t *msd, const uint8_t *cdb, int cdb_len,
                             void *data, uint32_t data_len, bool data_in)
 {
     const usb_hcd_t *hcd = msd->hcd;
-
-    cmd_rejected = false;
 
     // Build Command Block Wrapper. cb[] not in the initializer is zero-padded.
     usb_cbw_t cbw = {
@@ -162,36 +154,7 @@ static bool msd_bot_command(usb_msd_t *msd, const uint8_t *cdb, int cdb_len,
         return false;
     }
 
-    if (data_ok && csw.status == CSW_STATUS_PASSED) {
-        return true;
-    }
-    cmd_rejected = true;
-    return false;
-}
-
-// Discard pending sense data: a post-reset unit attention fails every command until collected.
-static void msd_request_sense(usb_msd_t *msd)
-{
-    if (!cmd_rejected) {
-        return;
-    }
-    uint8_t cdb[6] = { SCSI_REQUEST_SENSE, 0, 0, 0, 18, 0 };
-    uint8_t sense_data[18];
-    (void)msd_bot_command(msd, cdb, 6, sense_data, sizeof(sense_data), true);
-}
-
-// Retry transient bus errors. The command is reissued whole, so a partial op just repeats.
-static bool msd_bot_command_retry(usb_msd_t *msd, const uint8_t *cdb, int cdb_len,
-                                  void *data, uint32_t data_len, bool data_in)
-{
-    for (int attempt = 0; attempt < 3; attempt++) {
-        if (msd_bot_command(msd, cdb, cdb_len, data, data_len, data_in)) {
-            return true;
-        }
-        msd_request_sense(msd);
-        usleep(20 * MILLISEC);
-    }
-    return false;
+    return data_ok && csw.status == CSW_STATUS_PASSED;
 }
 
 //------------------------------------------------------------------------------
@@ -214,7 +177,7 @@ static bool read_capacity_16(usb_msd_t *msd)
         0, 0
     };
     uint8_t cap_data[32];
-    if (!msd_bot_command_retry(msd, cdb, 16, cap_data, sizeof(cap_data), true)) {
+    if (!msd_bot_command(msd, cdb, 16, cap_data, sizeof(cap_data), true)) {
         return false;
     }
 
@@ -236,21 +199,19 @@ bool msd_init(usb_msd_t *msd)
 
     // TEST UNIT READY — retry a few times since the device may need time to spin up.
     uint8_t cdb_tur[6] = { SCSI_TEST_UNIT_READY };
-    bool ready = false;
-    for (int retry = 0; retry < 5 && !ready; retry++) {
-        ready = msd_bot_command(msd, cdb_tur, 6, NULL, 0, false);
-        if (!ready) {
-            msd_request_sense(msd);
-            usleep(500 * MILLISEC);
+    for (int retry = 0; retry < 5; retry++) {
+        if (msd_bot_command(msd, cdb_tur, 6, NULL, 0, false)) {
+            break;
         }
+        usleep(500 * MILLISEC);
+        if (retry == 4) return false;
     }
-    if (!ready) return false;
 
     // READ CAPACITY (10) — returns 8 bytes: last LBA (4 bytes BE) + block size (4 bytes BE).
     uint8_t cdb_cap[10] = { SCSI_READ_CAPACITY_10 };
 
     uint8_t cap_data[8];
-    if (!msd_bot_command_retry(msd, cdb_cap, 10, cap_data, 8, true)) {
+    if (!msd_bot_command(msd, cdb_cap, 10, cap_data, 8, true)) {
         // Some larger drives reject 10-byte commands; try the 16-byte variant.
         if (!read_capacity_16(msd)) return false;
         msd->use_16 = true;
@@ -286,7 +247,7 @@ bool msd_read_sectors(usb_msd_t *msd, uint64_t lba, uint32_t count, void *buffer
             (uint8_t)(count >> 24), (uint8_t)(count >> 16), (uint8_t)(count >> 8), (uint8_t)count,
             0, 0
         };
-        return msd_bot_command_retry(msd, cdb, 16, buffer, count * msd->block_size, true);
+        return msd_bot_command(msd, cdb, 16, buffer, count * msd->block_size, true);
     }
 
     uint8_t cdb[10] = {
@@ -295,7 +256,7 @@ bool msd_read_sectors(usb_msd_t *msd, uint64_t lba, uint32_t count, void *buffer
         0,
         (uint8_t)(count >> 8), (uint8_t)count, 0
     };
-    return msd_bot_command_retry(msd, cdb, 10, buffer, count * msd->block_size, true);
+    return msd_bot_command(msd, cdb, 10, buffer, count * msd->block_size, true);
 }
 
 bool msd_write_sectors(usb_msd_t *msd, uint64_t lba, uint32_t count, const void *buffer)
@@ -308,7 +269,7 @@ bool msd_write_sectors(usb_msd_t *msd, uint64_t lba, uint32_t count, const void 
             (uint8_t)(count >> 24), (uint8_t)(count >> 16), (uint8_t)(count >> 8), (uint8_t)count,
             0, 0
         };
-        return msd_bot_command_retry(msd, cdb, 16, (void *)buffer, count * msd->block_size, false);
+        return msd_bot_command(msd, cdb, 16, (void *)buffer, count * msd->block_size, false);
     }
 
     uint8_t cdb[10] = {
@@ -317,5 +278,5 @@ bool msd_write_sectors(usb_msd_t *msd, uint64_t lba, uint32_t count, const void 
         0,
         (uint8_t)(count >> 8), (uint8_t)count, 0
     };
-    return msd_bot_command_retry(msd, cdb, 10, (void *)buffer, count * msd->block_size, false);
+    return msd_bot_command(msd, cdb, 10, (void *)buffer, count * msd->block_size, false);
 }

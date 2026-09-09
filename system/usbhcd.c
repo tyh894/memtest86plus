@@ -633,19 +633,6 @@ static int find_usb_controllers(hci_info_t hci_list[])
     return num_hci;
 }
 
-// A BAR the BIOS left in DRAM-decoded space reads back as memory contents, not device registers.
-static bool controller_regs_valid(hci_type_t controller_type, uintptr_t base_addr)
-{
-    uint32_t reg0 = read32((const volatile uint32_t *)base_addr);
-    if (controller_type == OHCI) {
-        return (reg0 & ~(uint32_t)0x1ff) == 0 && (reg0 & 0xf0) == 0x10;  // HcRevision 1.x
-    }
-    // EHCI and XHCI: CAPLENGTH must be set and HCIVERSION must be a plausible BCD version.
-    uint32_t cap_length  = reg0 & 0xff;
-    uint32_t hci_version = reg0 >> 16;
-    return cap_length != 0x00 && cap_length != 0xff && hci_version >= 0x0090 && hci_version <= 0x01ff;
-}
-
 static void reset_usb_controller(hci_info_t *hci)
 {
     hci_type_t controller_type = hci->type;
@@ -754,26 +741,12 @@ static void reset_usb_controller(hci_info_t *hci)
             hci->type = NOT_HCI;  // mark this controller as unusable
             return;
         }
-        uintptr_t virt_addr = map_region(base_addr, mmio_size, false);
-        if (virt_addr == 0) {
+        base_addr = map_region(base_addr, mmio_size, false);
+        if (base_addr == 0) {
             print_usb_info(" Failed to map device into virtual memory");
             hci->type = NOT_HCI;  // mark this controller as unusable
             return;
         }
-        // Some BIOSes assign a BAR inside DRAM-decoded space (ie: just below top of RAM),
-        // where the device can't respond. Detect that and move the BAR to a free MMIO hole.
-        if (!controller_regs_valid(controller_type, virt_addr)) {
-            base_addr = pci_alloc_mmio(bus, dev, func, bar, mmio_size);
-            virt_addr = base_addr != 0 ? map_region(base_addr, mmio_size, false) : 0;
-            if (virt_addr == 0 || !controller_regs_valid(controller_type, virt_addr)) {
-                print_usb_info(" Controller registers unreadable, ignoring controller");
-                hci->type = NOT_HCI;  // mark this controller as unusable
-                return;
-            }
-            print_usb_info(" BAR unusable, reallocated at %08x", base_addr);
-            hci->pm_base_addr = base_addr;
-        }
-        base_addr = virt_addr;
     }
 
     hci->vm_base_addr = base_addr;
@@ -995,20 +968,9 @@ bool assign_usb_address(const usb_hcd_t *hcd, const usb_hub_t *hub, int port_num
 
   fetch_descriptor:
     build_setup_packet(&setup_pkt, USB_REQ_FROM_DEVICE, USB_GET_DESCRIPTOR, USB_DESC_DEVICE << 8, 0, fetch_length);
-    // Some drives STALL or ignore this request while their firmware is still starting up, so retry.
-    for (int attempt = 1; ; attempt++) {
-        if (hcd->methods->get_data_request(hcd, ep0, &setup_pkt, data_buffer, fetch_length)
-        &&  valid_usb_device_descriptor(data_buffer)) {
-            break;
-        }
-        if (attempt == 3) {
-            return false;
-        }
-        usleep(100*MILLISEC);
-        // Until the device has an address, a port reset is safe and unsticks a stalled endpoint 0.
-        if (ep0->device_id == 0 && !reset_usb_hub_port(hcd, hub, port_num)) {
-            return false;
-        }
+    if (!hcd->methods->get_data_request(hcd, ep0, &setup_pkt, data_buffer, fetch_length)
+    ||  !valid_usb_device_descriptor(data_buffer)) {
+        return false;
     }
 #if 0
     print_usb_info("%02x %02x %02x %02x %02x %02x %02x %02x",
@@ -1284,27 +1246,10 @@ bool usb_hcd_available(void)
     return num_hcd > 0;
 }
 
-void usb_forget_msd(void)
-{
-    usb_mass_storage_found = false;
-    usb_msd_hcd_idx = -1;
-    usb_msd_name[0] = '\0';
-}
-
 bool usb_scan_for_msd(void)
 {
     if (usb_mass_storage_found) {
-        // An unplug or replug makes the stored device state stale, so check it still responds.
-        const usb_hcd_t *hcd = &hcd_list[usb_msd_hcd_idx];
-        usb_setup_pkt_t setup_pkt;
-        build_setup_packet(&setup_pkt, USB_REQ_FROM_DEVICE, USB_GET_DESCRIPTOR,
-                           USB_DESC_DEVICE << 8, 0, sizeof(usb_device_desc_t));
-        if (hcd->methods->get_data_request(hcd, &usb_msd_info.ep0, &setup_pkt,
-                                           hcd->ws->data_buffer, sizeof(usb_device_desc_t))
-        &&  valid_usb_device_descriptor(hcd->ws->data_buffer)) {
-            return true;
-        }
-        usb_forget_msd();
+        return true;
     }
     usb_runtime_scan = true;
     for (int i = 0; i < num_hcd && !usb_mass_storage_found; i++) {

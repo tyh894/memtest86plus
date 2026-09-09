@@ -24,10 +24,11 @@
 
 #include "tests.h"
 #include "serial.h"
+#include "unistd.h"
 #include "memctrl.h"
 #include "error.h"
 #include "reports.h"
-
+#include "smbios.h"
 //------------------------------------------------------------------------------
 // Constants
 //------------------------------------------------------------------------------
@@ -305,6 +306,13 @@ static void common_err(error_type_t type, uintptr_t addr, testword_t good, testw
 #endif
             }
 
+            if (type != PARITY_ERROR && type != CECC_ERROR) {
+                char *dimm_name = smbios_get_dimm_by_address(addr);
+                if (dimm_name) {
+                    scroll();
+                    display_scrolled_message(20, "-> Fault located on %s", dimm_name);
+                }
+            }
             set_foreground_colour(WHITE);
 
             display_error_count();
@@ -407,12 +415,24 @@ void error_update(void)
 
             // Display FAIL banner on first uncorrectable error
             if (error_count == 1) {
+                extern int testpass; // 1=Pass, 2=Fail (defined in main.c)
                 display_big_status(false);
+                testpass = 2;
+                // By default (continue_on_error == false), stop testing
+                // immediately on the first error.
+                if (!continue_on_error) {
+                    while (1) {
+                        usleep(200);
+                        direct_send_string("HEROSYS_FAIL");
+                        check_input();
+                    }
+                }
             }
         }
 
         if (enable_tty) {
             tty_error_redraw();
+            direct_send_string("HEROSYS_FAIL");
         }
     }
 

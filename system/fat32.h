@@ -36,8 +36,6 @@ typedef struct {
     uint32_t    fat_start_lba;
     uint32_t    data_start_lba;
     uint8_t     *sector_buf;        // one sector buffer
-    uint32_t    buf_lba;            // LBA currently held in sector_buf
-    bool        buf_valid;          // true if buf_lba is meaningful
 } fat32_fs_t;
 
 /**
@@ -74,5 +72,30 @@ bool fat32_write_file(fat32_fs_t *fs, const char *name_8_3, const void *data, ui
  * \returns true if a name was generated (false if all 99 slots are used).
  */
 bool fat32_next_filename(fat32_fs_t *fs, char *name_out);
+
+/**
+ * Reads an existing file from the root directory.
+ * The filename must be in 8.3 format padded with spaces (11 bytes).
+ *
+ * \param fs       - the mounted filesystem context.
+ * \param name_8_3 - the filename in 8.3 format (exactly 11 characters, no dot).
+ * \param data     - buffer to store the file contents.
+ * \param max_size - maximum size of the buffer.
+ * \param out_size - optional pointer to store the actual file size.
+ *
+ * \returns true if the file was found and read successfully.
+ */
+bool fat32_read_file(fat32_fs_t *fs, const char *name_8_3, void *data, uint32_t max_size, uint32_t *out_size);
+
+/**
+ * Deletes an existing file from the root directory.
+ * The filename must be in 8.3 format padded with spaces (11 bytes).
+ *
+ * \param fs       - the mounted filesystem context.
+ * \param name_8_3 - the filename in 8.3 format (exactly 11 characters, no dot).
+ *
+ * \returns true if the file was found and deleted successfully.
+ */
+bool fat32_delete_file(fat32_fs_t *fs, const char *name_8_3);
 
 #endif // FAT32_H

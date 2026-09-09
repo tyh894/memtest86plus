@@ -31,7 +31,8 @@
 #include "tests.h"
 
 #include "display.h"
-
+#include "smp.h"
+#include "dongle.h"
 //------------------------------------------------------------------------------
 // Constants
 //------------------------------------------------------------------------------
@@ -69,9 +70,10 @@ static int test_ticks = 0;      // current value (ticks_per_test is final value)
 
 static int pass_bar_length = 0; // currently displayed length
 static int test_bar_length = 0; // currently displayed length
+static int test_bar_colour = 2; // colour for test progress bar
 
 static uint64_t next_spin_time = 0; // TSC time stamp
-
+static uint64_t test_next_spin_time = 0;
 static int prev_sec = -1;               // previous second
 static bool timed_update_done = false;  // update cycle status
 
@@ -142,7 +144,7 @@ void display_init(void)
     set_foreground_colour(palette.title_foreground);
     set_background_colour(palette.title_background);
     clear_screen_region(0, 0, 0, 27);
-    prints(0, 0, "      Memtest86+ v" MT_VERSION);
+    prints(0, 0, "  HEROSYS BRUNIN TESET" MT_VERSION);
     set_foreground_colour(RED);
     printc(0, 15, '+');
     set_foreground_colour(palette.foreground);
@@ -153,43 +155,32 @@ void display_init(void)
     prints(4, 0, "L3 Cache:   N/A             | Testing:");
     prints(5, 0, "Memory  :   N/A             | Pattern:");
 //  prints(6, 0, "--------------------------------------------------------------------------------");
-    prints(7, 0, "CPU:                      SMP: N/A        | Time:           Status: Init.");
-    prints(8, 0, "Using:                                    | Pass:           Errors:");
+    prints(7, 0, "Pass:           Errors:                   | Time:           Status: Init.");
 //  prints(9, 0, "--------------------------------------------------------------------------------");
 
     if (ecc_status.ecc_enabled) {
-        prints(8, 57, "Err:        ECC:");
+        prints(7, 16, "Err:        ECC:");
     }
 
-    for (int i = 0;i < 80; i++) {
+    for (int i = 0; i < 80; i++) {
         print_char(6, i, 0xc4);
-        print_char(9, i, 0xc4);
+        print_char(8, i, 0xc4);
     }
     for (int i = 0; i < 6; i++) {
         print_char(i, 28, 0xb3);
     }
-    for (int i = 7; i < 10; i++) {
+    for (int i = 7; i < 9; i++) {
         print_char(i, 42, 0xb3);
     }
 
     print_char(6, 28, 0xc1);
     print_char(6, 42, 0xc2);
-    print_char(9, 42, 0xc1);
+    print_char(8, 42, 0xc1);
 
     set_foreground_colour(palette.footer_foreground);
     set_background_colour(palette.footer_background);
     clear_screen_region(ROW_FOOTER, 0, ROW_FOOTER, SCREEN_WIDTH - 1);
-    prints(ROW_FOOTER, 0, " <ESC> Exit  <F1> Configuration  <Space> Scroll Lock");
-    prints(ROW_FOOTER, 64, MT_VERSION "." GIT_HASH);
-#if defined (__x86_64__)
-    prints(ROW_FOOTER, 74, ".x64");
-#elif defined (__i386__)
-    prints(ROW_FOOTER, 74, ".x32");
-#elif defined (__loongarch_lp64)
-    prints(ROW_FOOTER, 74, ".la64");
-#elif defined (__aarch64__)
-    prints(ROW_FOOTER, 74, ".arm64");
-#endif
+    prints(ROW_FOOTER, 0, " <ESC> Exit <F1> Configuration <F2> Quick/Full <F3> D3 <F4> D4 <F5> D5 <F11> 2-");
 
     set_foreground_colour(palette.foreground);
     set_background_colour(palette.background);
@@ -199,9 +190,9 @@ void display_init(void)
     }
 #if defined(__aarch64__)
     // Generic timer does not run at CPU clock. Use the PMU instead
-    if (cpu_clk_mhz) {
-        display_cpu_clk((int)cpu_clk_mhz);
-    }
+    // if (cpu_clk_mhz) {
+    //     display_cpu_clk((int)cpu_clk_mhz);//显示CPU信息
+    // }
 #else
     if (clks_per_msec) {
         display_cpu_clk((int)(clks_per_msec / 1000));
@@ -354,12 +345,12 @@ void display_start_run(void)
     clear_screen_region(7, 49, 7, 57);                      // run time
 
     if (ecc_status.ecc_enabled) {
-        clear_screen_region(8, 49, 8, 53);                  // pass number
-        clear_screen_region(8, 61, 8, 68);                  // error count
-        clear_screen_region(8, 74, 8, SCREEN_WIDTH - 1);    // ecc error count
+        clear_screen_region(7, 5, 7, 9);                    // pass number
+        clear_screen_region(7, 20, 7, 27);                  // error count
+        clear_screen_region(7, 33, 7, 41);                  // ecc error count
     } else {
-        clear_screen_region(8, 49, 8, 59);                  // pass number
-        clear_screen_region(8, 68, 8, SCREEN_WIDTH - 1);    // error count
+        clear_screen_region(7, 5, 7, 9);                    // pass number
+        clear_screen_region(7, 25, 7, 41);                  // error count
     }
 
     display_pass_count(0);
@@ -374,7 +365,8 @@ void display_start_run(void)
     display_status("Testing");
 
     if (enable_tty){
-        tty_full_redraw();
+        // tty_full_redraw();
+        // direct_send_string("tty_full_redraw");
     }
 }
 
@@ -396,6 +388,7 @@ void display_start_test(void)
     display_test_number(test_num);
     display_test_description(test_list[test_num].description);
     test_bar_length = 0;
+    test_bar_colour = ((get_tsc() >> 8) & 0x7) + 1;
     test_ticks = 0;
 
 #if 0
@@ -507,6 +500,8 @@ void restore_big_status(void)
 
 void check_input(void)
 {
+    // printf(18,5, "%u", test_num);
+
     char input_key = get_key();
 
     if (input_key == '\0') {
@@ -541,7 +536,9 @@ void set_scroll_lock(bool enabled)
 {
     scroll_lock = enabled;
     set_foreground_colour(palette.footer_foreground);
-    prints(ROW_FOOTER, 48, scroll_lock ? "unlock" : "lock  ");
+    // The scroll lock hint text is no longer part of the footer, so only a
+    // single '*' marker in the last column indicates the locked state.
+    printc(ROW_FOOTER, SCREEN_WIDTH - 1, scroll_lock ? '*' : ' ');
     set_foreground_colour(palette.foreground);
 }
 
@@ -572,9 +569,11 @@ void scroll(void)
         scroll_screen_region(ROW_SCROLL_T, 0, ROW_SCROLL_B, SCREEN_WIDTH - 1);
     }
 }
+extern int testpass;
 
 void do_tick(int my_cpu)
 {
+    static uint64_t last_spinner_tick = 0;
     int act_sec = 0;
     bool use_spin_wait = (power_save < POWER_SAVE_HIGH);
     if (use_spin_wait) {
@@ -610,8 +609,23 @@ void do_tick(int my_cpu)
             pct = 100;
         }
     }
-    display_test_percentage(pct);
-    display_test_bar((BAR_LENGTH * pct) / 100);
+    bool update_test = true;
+    if (clks_per_msec > 0) {
+        uint64_t test_current_time = get_tsc();
+
+        if (test_current_time >= test_next_spin_time) {
+            test_next_spin_time = test_current_time + SPINNER_PERIOD*3 * clks_per_msec;
+        } else {
+            update_test = false;
+        }
+    }
+    // update spinner every SPINNER_PERIOD ms
+    if (update_test) {
+        display_test_percentage(pct);
+        set_foreground_colour(test_bar_colour);
+        display_test_bar((BAR_LENGTH * pct) / 100);
+        set_foreground_colour(palette.foreground);
+    }
 
     pct = 0;
     if (ticks_per_pass[pass_type] > 0) {
@@ -621,8 +635,9 @@ void do_tick(int my_cpu)
         }
     }
     display_pass_percentage(pct);
+    set_foreground_colour(2); 
     display_pass_bar((BAR_LENGTH * pct) / 100);
-
+    set_foreground_colour(palette.foreground);
     bool update_spinner = true;
     if (clks_per_msec > 0) {
         uint64_t current_time = get_tsc();
@@ -632,10 +647,57 @@ void do_tick(int my_cpu)
         int hours = mins / 60; mins %= 60;
         display_run_time(hours, mins, secs);
 
-        if (current_time >= next_spin_time) {
-            next_spin_time = current_time + SPINNER_PERIOD * clks_per_msec;
+        if (current_time > last_spinner_tick && (current_time - last_spinner_tick) > (200ULL * clks_per_msec)) {
+            last_spinner_tick = current_time;
+            update_spinner = true;
         } else {
             update_spinner = false;
+        }
+        // New Dongle polling and checking logic:
+        // Run test for 10 seconds, then hang to check dongle.
+        static uint64_t last_test_resume_tick = 0;
+        static bool first_boot_check = true;
+        if (last_test_resume_tick == 0) {
+            last_test_resume_tick = current_time;
+        }
+
+        if (first_boot_check || (current_time - last_test_resume_tick) > (10000ULL * clks_per_msec)) {
+            first_boot_check = false;
+            // 10 seconds elapsed, enter hang state to check dongle
+            dongle_reset_auth(); // Reset authorization state
+            
+            uint64_t check_start_tick = get_tsc();
+            uint64_t last_send_tick = 0;
+            bool need_dongle_msg_shown = false;
+
+            while (1) {
+                serial_poll_rx();
+                uint64_t now = get_tsc();
+
+                // Send heartbeat every 200ms
+                if (last_send_tick == 0 || (now - last_send_tick) > (200ULL * clks_per_msec)) {
+                    dongle_send_time_packet();
+                    last_send_tick = now;
+                }
+
+                if (dongle_is_authorized()) {
+                    if (need_dongle_msg_shown) {
+                        prints(16, 28, "                       ");
+                    }
+                    break; // Authorized, exit hang loop
+                }
+
+                // If 5 seconds pass without authorization, show message
+                if (!need_dongle_msg_shown && (now - check_start_tick) > (5000ULL * clks_per_msec)) {
+                    set_foreground_colour(RED);
+                    prints(16, 28, "Need Dongle! Waiting...");
+                    set_foreground_colour(palette.foreground);
+                    need_dongle_msg_shown = true;
+                }
+            }
+            
+            // Update resume tick to start the next 10s normal test phase
+            last_test_resume_tick = get_tsc();
         }
     }
 
@@ -677,6 +739,14 @@ void do_tick(int my_cpu)
 
             if (act_sec % tty_update_period == 0) {
                 tty_partial_redraw();
+            }
+            if(testpass == 1)
+            {
+                direct_send_string("HEROSYS_PASS");
+            }
+            else if(testpass == 2)
+            {
+                direct_send_string("HEROSYS_FAIL");
             }
         }
 

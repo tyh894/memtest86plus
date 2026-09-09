@@ -109,6 +109,15 @@ extern int vm_map_size;
  */
 extern int pass_num;
 /**
+ * The maximum number of test passes.
+ */
+extern int max_pass_num;
+/**
+ * Continue testing after an error. Default is false: stop on the first
+ * error and show the FAIL banner.
+ */
+extern bool continue_on_error;
+/**
  * The current test number.
  */
 extern int test_num;

@@ -59,6 +59,8 @@ struct tstruct_header {
     uint16_t handle;
 } __attribute__((packed));
 
+#define MAX_DMI_MEM_DEVS 64
+
 struct system_info {
     struct tstruct_header header;
     uint8_t  manufacturer;
@@ -160,9 +162,30 @@ struct mem_dev {
 /**
  * Memory device Structure (used for SPD decoding)
  */
+struct mem_dev_map {
+    struct tstruct_header header;
+    uint32_t start_addr;
+    uint32_t end_addr;
+    uint16_t mem_dev_handle;
+    uint16_t mem_array_map_handle;
+    uint8_t  partition_row_pos;
+    uint8_t  interleave_pos;
+    uint8_t  interleaved_data_depth;
+    uint64_t ext_start_addr;
+    uint64_t ext_end_addr;
+} __attribute__((packed));
 
 extern struct mem_dev *dmi_memory_device;
 
+
+extern struct mem_dev *dmi_memory_devices[];
+extern int dmi_memory_device_count;
+extern struct mem_dev_map *dmi_memory_device_maps[];
+extern int dmi_memory_device_map_count;
+extern int dmi_total_memory_slots;
+
+char *smbios_get_string(struct tstruct_header *header, int n);
+char *smbios_get_dimm_by_address(uint64_t addr);
 /**
  * Cached copy of dmi_memory_device->type (0 = undefined). Use this after
  * startup: pointers into the SMBIOS table do not survive relocation.
@@ -178,7 +201,6 @@ extern uint8_t dmi_memory_device_type;
 
 #define MAX_DMI_MEM_DEVICES 32
 
-extern struct mem_dev *dmi_memory_devices[MAX_DMI_MEM_DEVICES];
 extern int dmi_num_memory_devices;
 
 /**

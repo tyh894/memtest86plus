@@ -85,10 +85,30 @@ extern bool         tty_pl011;
 
 extern bool err_banner_redraw;
 
+// Configuration struct for saving to USB
+#define APP_CONFIG_MAGIC   0x4D543836 // 'MT86'
+#define APP_CONFIG_VERSION 1
+
+// We hardcode the max number to avoid circular dependency issues 
+// between tests.h and config.h when included from system files
+#define CONFIG_MAX_TESTS   12
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    int max_pass_num;
+    bool continue_on_error;
+    bool test_enabled[CONFIG_MAX_TESTS];
+    int test_sequence[CONFIG_MAX_TESTS];
+    // Add future configuration items here
+} app_config_t;
+
 void config_init(void);
 
 void config_menu(bool initial);
 
 void initial_config(void);
+
+void save_app_config(void);
 
 #endif // CONFIG_H

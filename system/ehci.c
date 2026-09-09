@@ -31,12 +31,6 @@
 
 #define EHCI_EXT_CAP_OS_HANDOFF 0x01
 
-// USB Legacy Support extended capability registers (byte offsets from the capability pointer)
-
-#define EHCI_USBLEGSUP_BIOS     0x02            // HC BIOS Owned Semaphore
-#define EHCI_USBLEGSUP_OS       0x03            // HC OS Owned Semaphore
-#define EHCI_USBLEGCTLSTS       0x04            // Legacy Support Control/Status register
-
 // Host Controller Structural Parameters
 
 #define EHCI_HCS_PPC            0x00000010      // Port Power Control
@@ -238,7 +232,6 @@ typedef struct {
     // State needed to rescan the root ports after initialisation.
     int                 num_hs_devices;
     uint8_t             num_ports;
-    uint8_t             msd_port;   // 1-based root port owning the found drive, 0 if none
     bool                i_have_companions;
     bool                port_in_use[EHCI_MAX_PORTS];
 } workspace_t  __attribute__ ((aligned (256)));
@@ -391,57 +384,28 @@ static void build_ehci_qhd(ehci_qhd_t *qhd, const ehci_qtd_t *qtd, const usb_ep_
     qhd->next_qtd_ptr = (uintptr_t)qtd;
 }
 
-// Clears a latched host system error and restarts the halted controller for recovery.
-static void restart_host_controller(const workspace_t *ws)
-{
-    ehci_op_regs_t *op_regs = ws->op_regs;
-
-    // start_host_controller rewrites USBCMD wholesale, so preserve the periodic schedule.
-    bool periodic_on = read32(&op_regs->usb_command) & EHCI_USBCMD_PSE;
-
-    write32(&op_regs->usb_status, EHCI_USBSTS_HSE | EHCI_USBSTS_ERR | EHCI_USBSTS_INT);
-    write32(&op_regs->async_list_addr, (uintptr_t)(ws->qhd));
-    (void)start_host_controller(op_regs);
-    if (periodic_on) {
-        enable_periodic_schedule(op_regs);
-    }
-    flush32(&op_regs->config_flag, 1);
-}
-
 static bool do_async_transfer(const workspace_t *ws, int num_tds)
 {
-    ehci_op_regs_t *op_regs = ws->op_regs;
-
     // The controller only detects device errors; a device that NAKs forever would
     // hang us, so also enforce a software timeout.
     bool ok = true;
-    bool hc_died = false;
-    enable_async_schedule(op_regs);
+    enable_async_schedule(ws->op_regs);
     for (int td_idx = 0; td_idx < num_tds && ok; td_idx++) {
         const ehci_qtd_t *qtd = &ws->qtd[td_idx];
         int timer = 5000 * MILLISEC / 10;
         while (qtd->status & EHCI_QTD_ACTIVE) {
-            // A halted controller will never complete this qTD, so fail fast.
-            if (read32(&op_regs->usb_status) & (EHCI_USBSTS_HSE | EHCI_USBSTS_HCH)) {
-                ok = false;
-                hc_died = true;
-                break;
-            }
             if (timer-- == 0) {
                 ok = false;
                 break;
             }
             usleep(10);
         }
-        if (qtd->status & (EHCI_QTD_HALTED | EHCI_QTD_DB_ERR | EHCI_QTD_BABBLE | EHCI_QTD_TR_ERR | EHCI_QTD_MMF)) {
+        if (qtd->status & (EHCI_QTD_HALTED | EHCI_QTD_DB_ERR | EHCI_QTD_BABBLE | EHCI_QTD_TR_ERR | EHCI_QTD_MMF | EHCI_QTD_PS)) {
             ok = false;
         }
     }
     // This waits for the schedule to go idle, so it also stops a timed-out transfer.
-    disable_async_schedule(op_regs);
-    if (hc_died) {
-        restart_host_controller(ws);
-    }
+    disable_async_schedule(ws->op_regs);
     return ok;
 }
 
@@ -504,7 +468,7 @@ static void poll_keyboards(const usb_hcd_t *hcd)
 
         hid_kbd_rpt_t *kbd_rpt = &ws->kbd_rpt[kbd_idx];
 
-        uint8_t error_mask = EHCI_QTD_HALTED | EHCI_QTD_DB_ERR | EHCI_QTD_BABBLE | EHCI_QTD_TR_ERR | EHCI_QTD_MMF;
+        uint8_t error_mask = EHCI_QTD_HALTED | EHCI_QTD_DB_ERR | EHCI_QTD_BABBLE | EHCI_QTD_TR_ERR | EHCI_QTD_MMF | EHCI_QTD_PS;
         if (~status & error_mask) {
             hid_kbd_rpt_t *prev_kbd_rpt = &ws->prev_kbd_rpt[kbd_idx];
             if (process_usb_keyboard_report(hcd, kbd_rpt, prev_kbd_rpt)) {
@@ -627,11 +591,9 @@ static bool scan_for_msd(const usb_hcd_t *hcd)
         // Check the port is powered up.
         if (~port_status & EHCI_PORT_SC_PP) continue;
 
-        // Skip ports owned by a previous scan, unless unplugged or hosting a since-forgotten drive.
+        // Skip ports owned by a device found during a previous scan, unless it was unplugged.
         if (ws->port_in_use[port_idx]) {
-            if (ws->msd_port == 1 + port_idx) {
-                ws->msd_port = 0;
-            } else if ((port_status & (EHCI_PORT_SC_CCS | EHCI_PORT_SC_PED)) == (EHCI_PORT_SC_CCS | EHCI_PORT_SC_PED)) {
+            if ((port_status & (EHCI_PORT_SC_CCS | EHCI_PORT_SC_PED)) == (EHCI_PORT_SC_CCS | EHCI_PORT_SC_PED)) {
                 continue;
             }
             ws->port_in_use[port_idx] = false;
@@ -671,7 +633,6 @@ static bool scan_for_msd(const usb_hcd_t *hcd)
         if (find_attached_usb_keyboards(hcd, &root_hub, 1 + port_idx, USB_SPEED_HIGH, ws->num_hs_devices,
                                         &ws->num_hs_devices, keyboards, 0, &num_keyboards)) {
             ws->port_in_use[port_idx] = true;
-            ws->msd_port = 1 + port_idx;
             return true;
         }
 
@@ -703,14 +664,6 @@ static const hcd_methods_t methods = {
     .scan_for_msd        = scan_for_msd
 };
 
-// Clearing CONFIGFLAG reverts the ports to the companion controllers, so a dead EHCI can't hide them.
-static bool abandon_controller(ehci_op_regs_t *op_regs, const char *what)
-{
-    flush32(&op_regs->config_flag, 0);
-    print_usb_info(" EHCI %s failed, ports released to companions", what);
-    return false;
-}
-
 //------------------------------------------------------------------------------
 // Public Functions
 //------------------------------------------------------------------------------
@@ -725,24 +678,12 @@ bool ehci_reset(int bus, int dev, int func, uintptr_t base_addr)
         uint8_t ext_cap_id = pci_config_read8(bus, dev, func, ext_cap_ptr + 0);
         if (ext_cap_id == EHCI_EXT_CAP_OS_HANDOFF) {
             // Take ownership from the SMM if necessary.
-            bool acquired = true;
             int timer = 1000;
-            pci_config_write8(bus, dev, func, ext_cap_ptr + EHCI_USBLEGSUP_OS, 1);
-            while (pci_config_read8(bus, dev, func, ext_cap_ptr + EHCI_USBLEGSUP_BIOS) & 1) {
-                if (timer == 0) {
-                    acquired = false;
-                    break;
-                }
+            pci_config_write8(bus, dev, func, ext_cap_ptr + 3, 1);
+            while (pci_config_read8(bus, dev, func, ext_cap_ptr + 2) & 1) {
+                if (timer == 0) return false;
                 usleep(1*MILLISEC);
                 timer--;
-            }
-
-            // Disable all SMI sources either way: they survive HCRESET and can wedge the CPU in SMM.
-            pci_config_write32(bus, dev, func, ext_cap_ptr + EHCI_USBLEGCTLSTS, 0);
-
-            // With SMIs disabled the SMM can't interfere, so a stuck BIOS semaphore is not fatal.
-            if (!acquired) {
-                print_usb_info(" BIOS handoff timed out, taking over anyway");
             }
         }
         ext_cap_ptr = pci_config_read8(bus, dev, func, ext_cap_ptr + 1);
@@ -751,8 +692,8 @@ bool ehci_reset(int bus, int dev, int func, uintptr_t base_addr)
     ehci_op_regs_t *op_regs = (ehci_op_regs_t *)(base_addr + cap_regs->cap_length);
 
     // Ensure the controller is halted and then reset it.
-    if (!halt_host_controller(op_regs)) return abandon_controller(op_regs, "halt");
-    if (!reset_host_controller(op_regs)) return abandon_controller(op_regs, "reset");
+    if (!halt_host_controller(op_regs)) return false;
+    if (!reset_host_controller(op_regs)) return false;
 
     return true;
 }
@@ -881,13 +822,9 @@ bool ehci_probe(uintptr_t base_addr, usb_hcd_t *hcd)
         num_hs_devices++;
 
         // Look for keyboards and USB drives attached directly or indirectly to this port.
-        bool port_msd_before = usb_mass_storage_found;
         if (find_attached_usb_keyboards(hcd, &root_hub, 1 + port_idx, USB_SPEED_HIGH, num_hs_devices,
                                         &num_hs_devices, keyboards, MAX_KEYBOARDS, &num_keyboards)) {
             ws->port_in_use[port_idx] = true;
-            if (usb_mass_storage_found && !port_msd_before) {
-                ws->msd_port = 1 + port_idx;
-            }
             continue;
         }
 
@@ -946,11 +883,6 @@ bool ehci_probe(uintptr_t base_addr, usb_hcd_t *hcd)
     return true;
 
 no_keyboards_found:
-    // The frame list and workspace are freed and reused below, so stop all DMA first.
-    (void)halt_host_controller(op_regs);
-    (void)reset_host_controller(op_regs);
-    // In case the reset failed to clear CONFIGFLAG, release the ports explicitly.
-    flush32(&op_regs->config_flag, 0);
     heap_rewind(HEAP_TYPE_LM_1, initial_heap_mark);
     return false;
 }

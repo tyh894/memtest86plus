@@ -4,8 +4,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "rtc.h"
-
 #include "string.h"
 
 #include "fat32.h"
@@ -75,30 +73,12 @@ static uint32_t cluster_to_lba(const fat32_fs_t *fs, uint32_t cluster)
 
 static bool read_sector(fat32_fs_t *fs, uint32_t lba)
 {
-    // The FAT is walked one cluster at a time, and a FAT32 sector holds 128 of them, so
-    // without this the same sector is fetched over the bus 128 times in a row.
-    if (fs->buf_valid && fs->buf_lba == lba) {
-        return true;
-    }
-    fs->buf_valid = false;
-    if (!msd_read_sectors(fs->msd, fs->partition_lba + lba, 1, fs->sector_buf)) {
-        return false;
-    }
-    fs->buf_lba   = lba;
-    fs->buf_valid = true;
-    return true;
+    return msd_read_sectors(fs->msd, fs->partition_lba + lba, 1, fs->sector_buf);
 }
 
 static bool write_sector(fat32_fs_t *fs, uint32_t lba)
 {
-    // The buffer holds this sector's contents once written, so it stays a valid entry.
-    fs->buf_valid = false;
-    if (!msd_write_sectors(fs->msd, fs->partition_lba + lba, 1, fs->sector_buf)) {
-        return false;
-    }
-    fs->buf_lba   = lba;
-    fs->buf_valid = true;
-    return true;
+    return msd_write_sectors(fs->msd, fs->partition_lba + lba, 1, fs->sector_buf);
 }
 
 static uint32_t fat_read_entry(fat32_fs_t *fs, uint32_t cluster)
@@ -238,6 +218,59 @@ static bool find_free_dir_entry(fat32_fs_t *fs,
     return false; // No free entry found.
 }
 
+// Search the root directory for a file matching the 8.3 name.
+// Returns the first cluster and file size using out parameters.
+static bool find_file_dir_entry(fat32_fs_t *fs, const char *name_8_3,
+                                uint32_t *out_first_cluster, uint32_t *out_file_size)
+{
+    if (fs->fat_type != 32) {
+        // FAT12/16: fixed root directory area.
+        for (uint32_t s = 0; s < fs->root_dir_sectors; s++) {
+            if (!read_sector(fs, fs->root_dir_lba + s)) return false;
+
+            for (uint32_t off = 0; off + DIR_ENTRY_SIZE <= fs->bytes_per_sector; off += DIR_ENTRY_SIZE) {
+                uint8_t *entry = fs->sector_buf + off;
+                if (entry[0] == 0x00) return false; // End of directory
+                if (entry[0] == 0xE5) continue;     // Deleted entry
+                if (entry[11] & 0x18) continue;     // Skip Volume ID (0x08) and Subdirectory (0x10)
+                
+                if (memcmp(entry, name_8_3, 11) == 0) {
+                    *out_first_cluster = (uint32_t)entry[26] | ((uint32_t)entry[27] << 8) | 
+                                         ((uint32_t)entry[20] << 16) | ((uint32_t)entry[21] << 24);
+                    memcpy(out_file_size, entry + 28, 4);
+                    return true;
+                }
+            }
+        }
+    } else {
+        // FAT32: root directory is a cluster chain.
+        uint32_t cluster = fs->root_cluster;
+        for (uint32_t n = 0; n < fs->max_cluster && is_valid_cluster(fs, cluster); n++) {
+            uint32_t lba = cluster_to_lba(fs, cluster);
+
+            for (int s = 0; s < fs->sectors_per_cluster; s++) {
+                if (!read_sector(fs, lba + s)) return false;
+
+                for (uint32_t off = 0; off + DIR_ENTRY_SIZE <= fs->bytes_per_sector; off += DIR_ENTRY_SIZE) {
+                    uint8_t *entry = fs->sector_buf + off;
+                    if (entry[0] == 0x00) return false;
+                    if (entry[0] == 0xE5) continue;
+                    if (entry[11] & 0x18) continue;
+                    
+                    if (memcmp(entry, name_8_3, 11) == 0) {
+                        *out_first_cluster = (uint32_t)entry[26] | ((uint32_t)entry[27] << 8) | 
+                                             ((uint32_t)entry[20] << 16) | ((uint32_t)entry[21] << 24);
+                        memcpy(out_file_size, entry + 28, 4);
+                        return true;
+                    }
+                }
+            }
+            cluster = fat_read_entry(fs, cluster);
+        }
+    }
+    return false;
+}
+
 //------------------------------------------------------------------------------
 // Public Functions
 //------------------------------------------------------------------------------
@@ -327,9 +360,6 @@ bool fat32_mount(fat32_fs_t *fs, usb_msd_t *msd, uint8_t *buf)
     fs->msd = msd;
     fs->sector_buf = buf;
     fs->partition_lba = 0;
-
-    // Mounting reads through msd_read_sectors directly, bypassing the sector cache.
-    fs->buf_valid = false;
 
     // Read sector 0.
     if (!msd_read_sectors(msd, 0, 1, buf)) return false;
@@ -435,6 +465,67 @@ bool fat32_mount(fat32_fs_t *fs, usb_msd_t *msd, uint8_t *buf)
     return false;
 }
 
+// Delete a file from the root directory.
+bool fat32_delete_file(fat32_fs_t *fs, const char *name_8_3)
+{
+    if (fs->fat_type != 32) {
+        for (uint32_t s = 0; s < fs->root_dir_sectors; s++) {
+            if (!read_sector(fs, fs->root_dir_lba + s)) return false;
+
+            bool modified = false;
+            for (uint32_t off = 0; off + DIR_ENTRY_SIZE <= fs->bytes_per_sector; off += DIR_ENTRY_SIZE) {
+                uint8_t *entry = fs->sector_buf + off;
+                if (entry[0] == 0x00) return false;
+                if (entry[0] == 0xE5) continue;
+                if (entry[11] & 0x18) continue;
+                
+                if (memcmp(entry, name_8_3, 11) == 0) {
+                    uint32_t first_cluster = (uint32_t)entry[26] | ((uint32_t)entry[27] << 8) | 
+                                             ((uint32_t)entry[20] << 16) | ((uint32_t)entry[21] << 24);
+                    entry[0] = 0xE5; // Mark as deleted
+                    modified = true;
+                    if (!write_sector(fs, fs->root_dir_lba + s)) return false;
+                    if (first_cluster != 0) {
+                        fat_free_chain(fs, first_cluster);
+                    }
+                    return true;
+                }
+            }
+        }
+    } else {
+        uint32_t cluster = fs->root_cluster;
+        for (uint32_t n = 0; n < fs->max_cluster && is_valid_cluster(fs, cluster); n++) {
+            uint32_t lba = cluster_to_lba(fs, cluster);
+
+            for (int s = 0; s < fs->sectors_per_cluster; s++) {
+                if (!read_sector(fs, lba + s)) return false;
+
+                bool modified = false;
+                for (uint32_t off = 0; off + DIR_ENTRY_SIZE <= fs->bytes_per_sector; off += DIR_ENTRY_SIZE) {
+                    uint8_t *entry = fs->sector_buf + off;
+                    if (entry[0] == 0x00) return false;
+                    if (entry[0] == 0xE5) continue;
+                    if (entry[11] & 0x18) continue;
+                    
+                    if (memcmp(entry, name_8_3, 11) == 0) {
+                        uint32_t first_cluster = (uint32_t)entry[26] | ((uint32_t)entry[27] << 8) | 
+                                                 ((uint32_t)entry[20] << 16) | ((uint32_t)entry[21] << 24);
+                        entry[0] = 0xE5; // Mark as deleted
+                        modified = true;
+                        if (!write_sector(fs, lba + s)) return false;
+                        if (first_cluster != 0) {
+                            fat_free_chain(fs, first_cluster);
+                        }
+                        return true;
+                    }
+                }
+            }
+            cluster = fat_read_entry(fs, cluster);
+        }
+    }
+    return false;
+}
+
 bool fat32_write_file(fat32_fs_t *fs, const char *name_8_3, const void *data, uint32_t size)
 {
     if (size == 0) return false;
@@ -510,23 +601,6 @@ bool fat32_write_file(fat32_fs_t *fs, const char *name_8_3, const void *data, ui
     // Attributes.
     entry[11] = DIR_ATTR_ARCHIVE;
 
-    // Creation/access/write timestamps. DIR_WrtDate is mandatory and 0 encodes an
-    // invalid date (day/month 0), so fall back to the build date when there is no RTC.
-    rtc_time_t now;
-    (void)rtc_get_time(&now);
-    uint16_t fat_time = now.hour << 11 | now.min << 5 | now.sec / 2;
-    uint16_t fat_date = (now.year - 1980) << 9 | now.month << 5 | now.day;
-    entry[14] = fat_time & 0xFF;            // creation time (bytes 14-15)
-    entry[15] = (fat_time >> 8) & 0xFF;
-    entry[16] = fat_date & 0xFF;            // creation date (bytes 16-17)
-    entry[17] = (fat_date >> 8) & 0xFF;
-    entry[18] = fat_date & 0xFF;            // last access date (bytes 18-19)
-    entry[19] = (fat_date >> 8) & 0xFF;
-    entry[22] = fat_time & 0xFF;            // last write time (bytes 22-23)
-    entry[23] = (fat_time >> 8) & 0xFF;
-    entry[24] = fat_date & 0xFF;            // last write date (bytes 24-25)
-    entry[25] = (fat_date >> 8) & 0xFF;
-
     // First cluster high word (bytes 20-21).
     entry[20] = (first_cluster >> 16) & 0xFF;
     entry[21] = (first_cluster >> 24) & 0xFF;
@@ -549,6 +623,54 @@ fail:
         fat_free_chain(fs, first_cluster);
     }
     return false;
+}
+
+bool fat32_read_file(fat32_fs_t *fs, const char *name_8_3, void *data, uint32_t max_size, uint32_t *out_size)
+{
+    uint32_t first_cluster;
+    uint32_t file_size;
+
+    if (!find_file_dir_entry(fs, name_8_3, &first_cluster, &file_size)) {
+        return false;
+    }
+
+    if (out_size) {
+        *out_size = file_size;
+    }
+
+    if (file_size == 0) {
+        return true;
+    }
+
+    if (data == NULL || max_size == 0) {
+        return false;
+    }
+
+    uint8_t *dst = (uint8_t *)data;
+    uint32_t remaining = file_size;
+    if (remaining > max_size) {
+        remaining = max_size; // Truncate if buffer is too small
+    }
+    
+    uint32_t cluster = first_cluster;
+    
+    while (remaining > 0 && is_valid_cluster(fs, cluster)) {
+        uint32_t lba = cluster_to_lba(fs, cluster);
+
+        for (int s = 0; s < fs->sectors_per_cluster && remaining > 0; s++) {
+            if (!read_sector(fs, lba + s)) return false;
+
+            uint32_t to_read = remaining < fs->bytes_per_sector ? remaining : fs->bytes_per_sector;
+            memcpy(dst, fs->sector_buf, to_read);
+            
+            dst += to_read;
+            remaining -= to_read;
+        }
+
+        cluster = fat_read_entry(fs, cluster);
+    }
+
+    return true;
 }
 
 // Check a directory entry against the MT86P_XX.TXT pattern and mark used slots.

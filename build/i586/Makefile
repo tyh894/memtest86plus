@@ -40,7 +40,6 @@ SYS_OBJS = system/acpi.o \
            system/pci.o \
            system/pmem.o \
            system/reloc.o \
-           system/rtc.o \
            system/screen.o \
            system/serial.o \
            system/smbios.o \
@@ -112,7 +111,7 @@ debug: check memtest.debug mt86plus
 -include $(subst .o,.d,$(TST_OBJS))
 -include $(subst .o,.d,$(APP_OBJS))
 
-boot/x86/header.o : ../../boot/sbat_csv.h
+boot/x86/header.o : | ../../boot/sbat.csv
 
 boot/x86/startup.o: ../../boot/x86/startup32.S ../../boot/boot.h
 	@mkdir -p boot/x86
@@ -129,8 +128,6 @@ boot/efisetup.o: ../../boot/efisetup.c
 system/reloc.o: ../../system/reloc32.c
 	@mkdir -p system
 	$(CC) -c $(CFLAGS) -fno-strict-aliasing $(OPT_SMALL) $(INC_DIRS) -o $@ $< -MMD -MP -MT $@ -MF $(@:.o=.d)
-
-system/rtc.o: app/build_version.h
 
 system/%.o: ../../system/%.c
 	@mkdir -p system
@@ -167,8 +164,6 @@ app/build_version.h: FORCE
 	  if $(GIT_AVAILABLE) && test -d ../../.git ; then \
 	    hash=`git rev-parse HEAD | cut -c1-7`; \
 	    sed -i 's/GIT_HASH\s\".*"/GIT_HASH "'$$hash'"/' $@.tmp; \
-	    bdate=`TZ=UTC git log -1 --format=%cd --date=format-local:'%Y-%m-%d %H:%M:%S'`; \
-	    sed -i 's/BUILD_DATETIME\s".*"/BUILD_DATETIME "'"$$bdate"'"/' $@.tmp; \
 	  else \
 	    sed -i 's/GIT_HASH\s\".*"/GIT_HASH "unknown"/' $@.tmp; \
 	  fi; \

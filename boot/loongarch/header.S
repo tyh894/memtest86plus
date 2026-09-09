@@ -145,20 +145,6 @@ section_table:
 	.long	IMAGE_SCN_MEM_READ		\
 	      | IMAGE_SCN_CNT_INITIALIZED_DATA	# Characteristics (section flags)
 
-	.ascii	".osrel"
-	.byte	0
-	.byte	0
-	.long	_virt_osrel_size		# VirtualSize
-	.long	_virt_osrel_start		# VirtualAddress
-	.long	_file_osrel_size		# SizeOfRawData
-	.long	_file_osrel_start		# PointerToRawData
-	.long	0				# PointerToRelocations
-	.long	0				# PointerToLineNumbers
-	.short	0				# NumberOfRelocations
-	.short	0				# NumberOfLineNumbers
-	.long	IMAGE_SCN_MEM_READ		\
-	      | IMAGE_SCN_CNT_INITIALIZED_DATA	# Characteristics (section flags)
-
 	.ascii	".sbat"
 	.byte	0
 	.byte	0
@@ -174,6 +160,20 @@ section_table:
 	.long	IMAGE_SCN_MEM_READ		\
 	      | IMAGE_SCN_CNT_INITIALIZED_DATA	# Characteristics (section flags)
 
+	.ascii	".osrel"
+	.byte	0
+	.byte	0
+	.long	_virt_osrel_size		# VirtualSize
+	.long	_virt_osrel_start		# VirtualAddress
+	.long	_file_osrel_size		# SizeOfRawData
+	.long	_file_osrel_start		# PointerToRawData
+	.long	0				# PointerToRelocations
+	.long	0				# PointerToLineNumbers
+	.short	0				# NumberOfRelocations
+	.short	0				# NumberOfLineNumbers
+	.long	IMAGE_SCN_MEM_READ		\
+	      | IMAGE_SCN_CNT_INITIALIZED_DATA	# Characteristics (section flags)
+
 	.org	512
 
 .section ".reloc"
@@ -182,7 +182,7 @@ section_table:
 	.short	(IMAGE_REL_BASED_ABSOLUTE << 12) + 0	// reloc 0 -> 0
 
 .section ".sbat", "a", @progbits
-#include "sbat_csv.h"
+.incbin "../boot/sbat.csv"
 
 .section ".osrel", "a", @progbits
 	.ascii	"ID=memtest86plus\n"

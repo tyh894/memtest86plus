@@ -74,11 +74,34 @@ void print_spdi(spd_info spdi, uint8_t row)
     uint8_t curcol;
 
     // Print Slot Index, Module Size, type & Max frequency (Jedec or XMP)
-    curcol = printf(row, 0, " - Slot %i: %kB %s-%i",
-                    spdi.slot_num,
-                    spdi.module_size * 1024,
-                    spdi.type,
-                    spdi.freq);
+   if (spdi.module_size == 0) {
+        if (spdi.slot_name[0] != '\0') {
+            printf(row, 0, " - %s: [Empty]", spdi.slot_name);
+        } else {
+            printf(row, 0, " - Slot %i: [Empty]", spdi.slot_num);
+        }
+        return;
+    }
+
+    if (spdi.slot_name[0] != '\0') {
+        curcol = printf(row, 0, " - %s: ", spdi.slot_name);
+    } else {
+        curcol = printf(row, 0, " - Slot %i: ", spdi.slot_num);
+    }
+
+    if (spdi.module_size < 1024) {
+        curcol = printf(row, curcol, "%iMB ", spdi.module_size);
+    } else {
+        curcol = printf(row, curcol, "%iGB ", spdi.module_size / 1024);
+    }
+
+    if (spdi.type) {
+        curcol = printf(row, curcol, "%s-", spdi.type);
+    }
+    
+    if (spdi.freq > 0) {
+        curcol = printf(row, curcol, "%i ", spdi.freq);
+    }
 
     // Flag modules with an invalid SPD checksum/CRC
     if (spdi.hasBadCRC) {
@@ -97,22 +120,57 @@ void print_spdi(spd_info spdi, uint8_t row)
         curcol = prints(row, ++curcol, "XMP");
     } else if (spdi.XMP == 20) {
         curcol = prints(row, ++curcol, "EPP");
+    } else if (spdi.XMP >= 30) {
+        curcol = prints(row, ++curcol, "XMP3");
     }
 
     // Print Manufacturer from JEDEC106, or the raw JEDEC ID if not in the table
-    const char *manufacturer = get_jep106_name(spdi.jedec_code);
+    // Print Manufacturer from JEDEC106
+    bool manuf_printed = false;
+    uint16_t jedec_masked = spdi.jedec_code & 0x7FFF; // Mask out the MSB parity bit
 
-    if (manufacturer != NULL) {
-        curcol = printf(row, ++curcol, "- %s", manufacturer);
-    } else if (spdi.jedec_code == 0) {
-        curcol = prints(row, ++curcol, "- Noname");
+    // Force match for 0x105e just in case
+    if (spdi.jedec_code == 0x105e || jedec_masked == 0x105e) {
+        curcol = printf(row, ++curcol, "- HEROSYS ");
+        manuf_printed = true;
     } else {
-        curcol = printf(row, ++curcol, "- Unknown (0x%x)", spdi.jedec_code);
+        // for (int i = 0; i < JEP106_CNT; i++) {
+        //     if (jedec_masked == jep106[i].jedec_code) {
+        //         curcol = printf(row, ++curcol, "- %s ", jep106[i].name);
+        //         manuf_printed = true;
+        //         break;
+        //     }
+        // }
+    }
+
+    // If not present in JEDEC106, display raw JEDEC ID
+    if (!manuf_printed) {
+        if (spdi.jedec_code != 0xFFFF && spdi.jedec_code != 0x0) {
+            // Check for our custom HEROSYS code with parity bit stripped
+            if ((spdi.jedec_code & 0x7FFF) == 0x105E || spdi.jedec_code == 0x105E) {
+                curcol = prints(row, ++curcol, "- HEROSYS ");
+            } else {
+                curcol = printf(row, ++curcol, "- Unknown (0x%x) ", spdi.jedec_code);
+            }
+        } else if (spdi.jedec_code == 0xFFFF && spdi.sku[0] == '\0') {
+            // Do not print anything if we are using SMBIOS fallback and there is no SKU
+        } else if (spdi.jedec_code == 0xFFFF && spdi.sku[0] != '\0') {
+            curcol = prints(row, ++curcol, "- ");
+        } else {
+            // Fallback for jedec_code == 0 but sku is populated
+            if (spdi.sku[0] != '\0') {
+                curcol = prints(row, ++curcol, "- Unknown ");
+            } else {
+                curcol = prints(row, ++curcol, "- Noname ");
+            }
+        }
     }
 
     // Print SKU
-    if (*spdi.sku)
-        curcol = prints(row, curcol + 1, spdi.sku);
+    if (spdi.sku[0] != '\0') {
+        curcol = printf(row, curcol, "%s", spdi.sku);
+    }
+
 
     // Check manufacturing date and print if valid.
     // fab_year is uint8_t and carries only the last two digits.

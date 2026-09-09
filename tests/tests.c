@@ -26,7 +26,7 @@
 #include "config.h"
 #include "display.h"
 #include "test.h"
-
+#include "cpuinfo.h"
 #include "test_funcs.h"
 #include "test_helper.h"
 
@@ -52,7 +52,7 @@
 test_pattern_t test_list[NUM_TEST_PATTERNS] = {
     // ena,  cpu, stgs, itrs, errs, description
     { true,  ONE,    1,    6,    0, "[Address test, walking ones, no cache] "},
-    {false,  ONE,    1,    6,    0, "[Address test, own address in window]  "},
+    {true,  ONE,    1,    6,    0, "[Address test, own address in window]  "},
     { true,  ONE,    2,    6,    0, "[Address test, own address + window]   "},
     { true,  PAR,    1,   32,    0, "[Bus stress, R/W turnaround, random]   "},
     { true,  PAR,    1,    6,    0, "[Moving inversions, 1s & 0s]           "},
