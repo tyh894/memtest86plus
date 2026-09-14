@@ -43,6 +43,7 @@
 #define SMBHSTCNT_PROC_CALL         0x10
 #define SMBHSTCNT_BLOCK_DATA        0x14
 #define SMBHSTCNT_I2C_BLOCK_DATA    0x18
+#define SMBHSTCNT_KILL              0x02
 #define SMBHSTCNT_LAST_BYTE         0x20
 #define SMBHSTCNT_START             0x40
 

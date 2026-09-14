@@ -43,6 +43,7 @@ uintptr_t read_value(int row, int col, int field_width, int shift)
 
         if (tty_update) {
             tty_send_region(row, col, row, col+10);
+            direct_send_string("read_value");
         }
 
         tty_update = enable_tty;

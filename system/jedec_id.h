@@ -1675,4 +1675,5 @@
     ENTRY(0x0E58, "Trium Elek.")
     ENTRY(0x0F33, "Xllbyte")
     ENTRY(0x0F37, "SSTC")
+    ENTRY(0x105E, "HEROSYS")
     ENTRY(0xFFFF, "Unknown")
