@@ -1149,13 +1149,15 @@ void config_menu(bool initial)
                 } else {
                     prints(POP_R+8,  POP_LI, "<F6>  Save results to USB");
                 }
-                prints(POP_R+9,  POP_LI, "<F10> Exit menu");
-                prints(POP_R+10, POP_LI, "< S > Save configuration to USB");
-                prints(POP_R+11, POP_LI, "< D > Restore default config");
+                printf(POP_R+9,  POP_LI, "<F7>  RAM Temperature %s", enable_temp_ram ? "disable" : "enable ");
+                prints(POP_R+10, POP_LI, "<F10> Exit menu");
+                prints(POP_R+11, POP_LI, "< S > Save configuration to USB");
+                prints(POP_R+12, POP_LI, "< D > Restore default config");
             } else {
-                prints(POP_R+8,  POP_LI, "<F10> Exit menu");
-                prints(POP_R+9,  POP_LI, "< S > Save configuration to USB");
-                prints(POP_R+10, POP_LI, "< D > Restore default config");
+                printf(POP_R+9,  POP_LI, "<F7>  RAM Temperature %s", enable_temp_ram ? "disable" : "enable ");
+                prints(POP_R+10, POP_LI, "<F10> Exit menu");
+                prints(POP_R+11, POP_LI, "< S > Save configuration to USB");
+                prints(POP_R+12, POP_LI, "< D > Restore default config");
             }
         }
 
@@ -1196,9 +1198,7 @@ void config_menu(bool initial)
             }
             break;
           case '7':
-            if (initial) {
-                enable_temp_ram = !enable_temp_ram;
-            }
+            enable_temp_ram = !enable_temp_ram;
             break;
           case '8':
             if (initial) {

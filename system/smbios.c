@@ -261,6 +261,11 @@ static int parse_dmi(uint16_t numstructs)
             if (dmi_memory_device == NULL || dmi_memory_device->type <= 2) {
                 dmi_memory_device = md;
             }
+            // Remember the type of the first real memory device. This selects the
+            // SPD page-switching scheme (DDR4/DDR5) and gates RAM temperature reads.
+            if (dmi_memory_device_type == 0 && md->type > 2) {
+                dmi_memory_device_type = md->type;
+            }
         }
         // Type 20 - Memory Device Mapped Address
         else if (header->type == 20 && header->length >= 19) {

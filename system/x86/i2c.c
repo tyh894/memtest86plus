@@ -91,6 +91,10 @@ int print_spd_startup_info(void)
 
     spd_info curspd;
 
+    // The RAM temperature display is driven from this table - rebuild it
+    // from scratch on every enumeration.
+    memset(ram_slot_info, 0, sizeof(ram_slot_info));
+
     if (quirk.type & QUIRK_TYPE_SMBUS) {
         quirk.process();
     }
@@ -129,7 +133,11 @@ int print_spd_startup_info(void)
 
     // If no SPD devices were found natively, fallback completely to SMBIOS DMI
     if (used_smbios) {
-        prints(ROW_SPD-1, 0, "Memory SPD Information (SMBIOS)");
+        if (has_smbus) {
+            prints(ROW_SPD-1, 0, "Memory SPD Information (SMBIOS)");
+        } else {
+            prints(ROW_SPD-1, 0, "Memory SPD Information (SMBIOS, No SMBus)");
+        }
     } else {
         prints(ROW_SPD-1, 0, "Memory SPD Information");
     }
@@ -199,6 +207,10 @@ int print_spd_startup_info(void)
                         physical_spds[j].jedec_code = 0xFFFF;
                     }
                     print_spdi(physical_spds[j], ROW_SPD+spd_line_idx);
+                    ram_slot_info[physical_spds[j].slot_num].slot_idx = physical_spds[j].slot_num;
+                    ram_slot_info[physical_spds[j].slot_num].display_idx = spd_line_idx;
+                    ram_slot_info[physical_spds[j].slot_num].isPopulated = true;
+                    ram_slot_info[physical_spds[j].slot_num].hasTempSensor = physical_spds[j].hasTempSensor;
                     found = true;
                     break;
                 }
@@ -392,6 +404,19 @@ int print_spd_startup_info(void)
                 } else {
                     curspd.freq = 0;
                 }
+
+                // No physical SPD match: guess the I2C slot from the populated
+                // DMI slot order (rank 0 -> SPD address 0x50, etc).
+                for (int r = 0; r < pop_dmi_count; r++) {
+                    if (pop_dmi[r] == i) {
+                        curspd.slot_num = (uint8_t)r;
+                        break;
+                    }
+                }
+                // All DDR5 modules have an SPD5118 hub with a temperature sensor.
+                if (md->type == DMI_DDR5) {
+                    curspd.hasTempSensor = true;
+                }
             }
 
             // ALWAYS extract strings, even if size is 0!
@@ -529,6 +554,12 @@ int print_spd_startup_info(void)
         print_spdi(print_spd, ROW_SPD + spd_line_idx);
         if (is_diff) {
             set_foreground_colour(palette.foreground);
+        }
+        if (print_spd.module_size > 0 && print_spd.slot_num < MAX_SPD_SLOT) {
+            ram_slot_info[print_spd.slot_num].slot_idx = print_spd.slot_num;
+            ram_slot_info[print_spd.slot_num].display_idx = spd_line_idx;
+            ram_slot_info[print_spd.slot_num].isPopulated = true;
+            ram_slot_info[print_spd.slot_num].hasTempSensor = print_spd.hasTempSensor;
         }
         spd_line_idx++;
     }

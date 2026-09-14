@@ -29,6 +29,9 @@
 #include "error.h"
 #include "reports.h"
 #include "smbios.h"
+
+// 1=Pass, 2=Fail (defined in main.c)
+extern int testpass;
 //------------------------------------------------------------------------------
 // Constants
 //------------------------------------------------------------------------------
@@ -155,6 +158,13 @@ static bool update_error_info(testword_t page, testword_t offset, uintptr_t addr
 
 static void common_err(error_type_t type, uintptr_t addr, testword_t good, testword_t bad, bool use_for_badram)
 {
+    // Once the test has stopped on an error (default behaviour), ignore all
+    // further errors so the FAIL banner stays visible and the display no
+    // longer scrolls.
+    if (testpass == 2 && !continue_on_error) {
+        return;
+    }
+
     spin_lock(error_mutex);
 
     restore_big_status();
@@ -337,6 +347,22 @@ static void common_err(error_type_t type, uintptr_t addr, testword_t good, testw
     }
 
     spin_unlock(error_mutex);
+
+    // By default (continue_on_error == false) stop the test on the first
+    // uncorrectable error and show the FAIL banner. Only the master CPU may
+    // poll the keyboard, so it runs the halt loop; errors found by other
+    // CPUs are caught by error_update() on the master.
+    if (!continue_on_error && error_count > 0
+        && smp_my_cpu_num() == master_cpu) {
+        testpass = 2;
+        display_status("Failed!");
+        display_big_status(false);
+        while (1) {
+            usleep(200);
+            direct_send_string("HEROSYS_FAIL");
+            check_input();
+        }
+    }
 }
 
 //------------------------------------------------------------------------------
@@ -413,9 +439,11 @@ void error_update(void)
         if (error_count > 0) {
             display_status("Failed!");
 
-            // Display FAIL banner on first uncorrectable error
-            if (error_count == 1) {
-                extern int testpass; // 1=Pass, 2=Fail (defined in main.c)
+            // Display FAIL banner on first uncorrectable error.
+            // Don't rely on (error_count == 1): several errors can be
+            // recorded before error_update() runs again, so error_count
+            // may already be > 1 on the first call.
+            if (testpass != 2) {
                 display_big_status(false);
                 testpass = 2;
                 // By default (continue_on_error == false), stop testing
