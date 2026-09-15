@@ -11,6 +11,7 @@
 // By Chris Brady
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "boot.h"
@@ -33,6 +34,7 @@
 #include "string.h"
 #include "unistd.h"
 
+#include "lang.h"
 #include "display.h"
 #include "reports.h"
 #include "test.h"
@@ -73,7 +75,7 @@
 // Private Variables
 //------------------------------------------------------------------------------
 
-static uint16_t popup_save_buffer[POP_W * POP_H];
+static shadow_char_t popup_save_buffer[POP_W * POP_H];
 
 //------------------------------------------------------------------------------
 // Public Variables
@@ -423,9 +425,9 @@ static void parse_command_line(char *cmd_line, int cmd_line_size)
 static void display_initial_notice(void)
 {
     if (smp_enabled) {
-        display_notice("Press <F1> to configure, <F2> to disable SMP, <Enter> to start testing");
+        display_notice("按 <F1> 配置，<F2> 禁用 SMP，<Enter> 开始测试");
     } else {
-        display_notice("Press <F1> to configure, <F2> to enable SMP, <Enter> to start testing ");
+        display_notice("按 <F1> 配置，<F2> 启用 SMP，<Enter> 开始测试 ");
     }
 }
 
@@ -481,10 +483,10 @@ static void display_error_message(int row, const char *message)
 static void display_selection_header(int row, int max_num, int offset)
 {
     int i;
-    prints(row, POP_LM-2, "Current selection:");
-    prints(row, POP_LM+18, "Current sequence:");
+    prints(row, POP_LM-2, "当前选择:");
+    prints(row, POP_LM+18, "当前序列:");
     if (max_num >= SEL_AREA) {
-        prints(row, POP_LM+18, "  (scroll U D)");
+        prints(row, POP_LM+18, "  (滚动 U D)");
         printc(row, POP_LM+28, 0x18);
         printc(row, POP_LM+30, 0x19);
     }
@@ -530,10 +532,10 @@ static bool set_all_tests(bool enabled)
 static bool add_or_remove_test(bool add)
 {
 
-    display_input_message(POP_R+15, "Enter test #");
-    int n = read_value(POP_R+15, POP_LM+12, 2, 0);
+    display_input_message(POP_R+15, "输入测试编号#");
+    int n = read_value(POP_R+15, POP_LM+11, 2, 0);
     if (n < 0 || n >= NUM_TEST_PATTERNS) {
-        display_error_message(POP_R+15, "Invalid test number");
+        display_error_message(POP_R+15, "无效的测试编号");
         return false;
     }
     test_list[n].enabled = add;
@@ -543,6 +545,7 @@ static bool add_or_remove_test(bool add)
 }
 extern bool start_pass;
 extern int test_sequence[NUM_TEST_PATTERNS];
+extern int testpass;           // main.c: 0 = running, 1 = pass, 2 = fail
 static bool display_sequence()
 {
     for (int i = 0; i < NUM_TEST_PATTERNS; i++) {
@@ -568,19 +571,19 @@ static bool set_all_sequence()
     {
         // display_input_message(POP_R+15, "Enter sequence %u#",i);
         clear_popup_row(POP_R+15);
-        printf(POP_R+15, POP_LM, "Enter sequence %u#",i);
+        printf(POP_R+15, POP_LM, "输入序列 %u#",i);
         // if (enable_tty) tty_send_region(POP_REGION);
         // direct_send_string("set_all_sequence");
-        int value = read_value(POP_R+15, POP_LM+12+7, 2, 0);
+        int value = read_value(POP_R+15, POP_LM+11, 2, 0);
         if ( value < 0 ||  value >= NUM_TEST_PATTERNS) {
-            display_error_message(POP_R+15, "Invalid test number");
+            display_error_message(POP_R+15, "无效的测试编号");
             return false;
         }
         for(int j = 0;j<NUM_TEST_PATTERNS;j++)
         {
             if(value == test[j])
             {
-                display_error_message(POP_R+15, "Duplicate test number");
+                display_error_message(POP_R+15, "重复的测试编号");
                 return false;
             }
         }
@@ -598,16 +601,16 @@ static bool set_all_sequence()
 }
 static bool add_test_range()
 {
-    display_input_message(POP_R+15, "Enter first test #");
+    display_input_message(POP_R+15, "输入起始测试编号:");
     int n1 = read_value(POP_R+15, POP_LM+18, 2, 0);
     if (n1 < 0 || n1 >= NUM_TEST_PATTERNS) {
-        display_error_message(POP_R+15, "Invalid test number");
+        display_error_message(POP_R+15, "无效的测试编号");
         return false;
     }
-    display_input_message(POP_R+15, "Enter last test #");
-    int n2 = read_value(POP_R+15, POP_LM+17, 2, 0);
+    display_input_message(POP_R+15, "输入结束测试编号:");
+    int n2 = read_value(POP_R+15, POP_LM+18, 2, 0);
     if (n2 < n1 || n2 >= NUM_TEST_PATTERNS) {
-        display_error_message(POP_R+15, "Invalid test range");
+        display_error_message(POP_R+15, "无效的测试范围");
         return false;
     }
     for (int i = n1; i <= n2; i++) {
@@ -619,28 +622,28 @@ static bool add_test_range()
 }
 static void set_test_cycle_times(void)
 {
-    display_input_message(POP_R+15, "Enter test cycle times:");
-    int num = read_value(POP_R+15, POP_LM+24, 5, 0);
+    display_input_message(POP_R+15, "输入测试循环次数:");
+    int num = read_value(POP_R+15, POP_LM+18, 5, 0);
     if (num > 0) {
         max_pass_num = num;
         pass_num = 0; // Reset current pass counter
-        printf(POP_R+9, POP_LI, "<F7>  Test cycle times : %u      ", max_pass_num);
+        printf(POP_R+9, POP_LI, "<F7>  测试循环次数 : %u      ", max_pass_num);
     }
     clear_popup_row(POP_R+15);
 }
 static void test_selection_menu(void)
 {
     clear_screen_region(POP_REGION);
-    prints(POP_R+1, POP_LM, "Test Selection:");
-    prints(POP_R+3, POP_LI, "<F1>  Clear selection");
-    prints(POP_R+4, POP_LI, "<F2>  Remove one test");
-    prints(POP_R+5, POP_LI, "<F3>  Add one test");
-    prints(POP_R+6, POP_LI, "<F4>  Add test range");
-    prints(POP_R+7, POP_LI, "<F5>  Add all tests");
-    prints(POP_R+8, POP_LI, "<F6>  Set test sequence");
-    printf(POP_R+9, POP_LI, "<F7>  Test cycle times : %u      ", max_pass_num);
-    printf(POP_R+10, POP_LI, "<F8>  Continue on error : %s     ", continue_on_error ? "Yes" : "No ");
-    prints(POP_R+11, POP_LI, "<F10> Exit menu");
+    prints(POP_R+1, POP_LM, "测试选择:");
+    prints(POP_R+3, POP_LI, "<F1>  清除选择");
+    prints(POP_R+4, POP_LI, "<F2>  移除单个测试");
+    prints(POP_R+5, POP_LI, "<F3>  添加单个测试");
+    prints(POP_R+6, POP_LI, "<F4>  添加测试范围");
+    prints(POP_R+7, POP_LI, "<F5>  添加全部测试");
+    prints(POP_R+8, POP_LI, "<F6>  设置测试顺序");
+    printf(POP_R+9, POP_LI, "<F7>  测试循环次数 : %u      ", max_pass_num);
+    printf(POP_R+10, POP_LI, "<F8>  出错时继续 : %s     ", continue_on_error ? "是" : "否");
+    prints(POP_R+11, POP_LI, "<F10> 退出菜单");
 
     display_selection_header(POP_R+12, NUM_TEST_PATTERNS - 1, 0);
     for (int i = 0; i < NUM_TEST_PATTERNS; i++) {
@@ -686,7 +689,7 @@ static void test_selection_menu(void)
           case '8':
             // Toggle continue-on-error
             continue_on_error = !continue_on_error;
-            printf(POP_R+10, POP_LI, "<F8>  Continue on error : %s     ", continue_on_error ? "Yes" : "No ");
+            printf(POP_R+10, POP_LI, "<F8>  出错时继续 : %s     ", continue_on_error ? "是" : "否");
             break;
           case '0': {
             clear_popup_row(POP_R+15);
@@ -699,7 +702,7 @@ static void test_selection_menu(void)
             if (num_selected > 0) {
                 exit_menu = true;
             } else {
-                display_error_message(POP_R+15, "You must select at least one test");
+                display_error_message(POP_R+15, "必须至少选择一个测试");
             }
           } break;
           default:
@@ -719,12 +722,12 @@ static void test_selection_menu(void)
 static void address_range_menu(void)
 {
     clear_screen_region(POP_REGION);
-    prints(POP_R+1, POP_LM, "Address Range:");
-    prints(POP_R+3, POP_LI, "<F1>  Set lower limit");
-    prints(POP_R+4, POP_LI, "<F2>  Set upper limit");
-    prints(POP_R+5, POP_LI, "<F3>  Test all memory");
-    prints(POP_R+6, POP_LI, "<F10> Exit menu");
-    printf(POP_R+8, POP_LM, "Current range: %kB - %kB", pm_limit_lower << 2, pm_limit_upper << 2);
+    prints(POP_R+1, POP_LM, "地址范围:");
+    prints(POP_R+3, POP_LI, "<F1>  设置下限");
+    prints(POP_R+4, POP_LI, "<F2>  设置上限");
+    prints(POP_R+5, POP_LI, "<F3>  测试全部内存");
+    prints(POP_R+6, POP_LI, "<F10> 退出菜单");
+    printf(POP_R+8, POP_LM, "当前范围: %kB - %kB", pm_limit_lower << 2, pm_limit_upper << 2);
 
     bool tty_update = enable_tty;
     bool exit_menu = false;
@@ -738,25 +741,25 @@ static void address_range_menu(void)
 
         switch (get_key()) {
           case '1': {
-            display_input_message(POP_R+10, "Enter lower limit: ");
-            uintptr_t page = read_value(POP_R+10, POP_LM+19, 15, -PAGE_SHIFT);
+            display_input_message(POP_R+10, "输入下限: ");
+            uintptr_t page = read_value(POP_R+10, POP_LM+11, 15, -PAGE_SHIFT);
             if (page < pm_limit_upper) {
                 clear_popup_row(POP_R+10);
                 pm_limit_lower = page;
                 changed = true;
             } else {
-                display_error_message(POP_R+10, "Lower must be less than upper");
+                display_error_message(POP_R+10, "下限必须小于上限");
             }
           } break;
           case '2': {
-            display_input_message(POP_R+10, "Enter upper limit: ");
-            uintptr_t page = read_value(POP_R+10, POP_LM+19, 15, -PAGE_SHIFT);
+            display_input_message(POP_R+10, "输入上限: ");
+            uintptr_t page = read_value(POP_R+10, POP_LM+11, 15, -PAGE_SHIFT);
             if (page > pm_limit_lower) {
                 clear_popup_row(POP_R+10);
                 pm_limit_upper = page;
                 changed = true;
             } else {
-                display_error_message(POP_R+10, "Upper must be greater than lower");
+                display_error_message(POP_R+10, "上限必须大于下限");
             }
           } break;
           case '3':
@@ -775,7 +778,7 @@ static void address_range_menu(void)
         }
         if (changed) {
             clear_popup_row(POP_R+8);
-            printf(POP_R+8, POP_LM, "Current range: %kB - %kB", pm_limit_lower << 2, pm_limit_upper << 2);
+            printf(POP_R+8, POP_LM, "当前范围: %kB - %kB", pm_limit_lower << 2, pm_limit_upper << 2);
             update_num_pages_to_test();
             restart = true;
             changed = false;
@@ -795,11 +798,11 @@ static void set_cpu_mode(cpu_mode_t mode)
 static void cpu_mode_menu(void)
 {
     clear_screen_region(POP_REGION);
-    prints(POP_R+1, POP_LM, "CPU Sequencing Mode:");
-    prints(POP_R+3, POP_LI, "<F1>  Parallel    (PAR)");
-    prints(POP_R+4, POP_LI, "<F2>  Sequential  (SEQ)");
-    prints(POP_R+5, POP_LI, "<F3>  Round robin (RR)");
-    prints(POP_R+6, POP_LI, "<F10> Exit menu");
+    prints(POP_R+1, POP_LM, "CPU 调度模式:");
+    prints(POP_R+3, POP_LI, "<F1>  并行    (PAR)");
+    prints(POP_R+4, POP_LI, "<F2>  串行  (SEQ)");
+    prints(POP_R+5, POP_LI, "<F3>  轮询 (RR)");
+    prints(POP_R+6, POP_LI, "<F10> 退出菜单");
     printc(POP_R+3+cpu_mode, POP_LM, '*');
 
     bool tty_update = enable_tty;
@@ -851,14 +854,14 @@ static void set_error_mode(error_mode_t mode)
 static void error_mode_menu(void)
 {
     clear_screen_region(POP_REGION);
-    prints(POP_R+1, POP_LM, "Error Reporting Mode:");
-    prints(POP_R+3, POP_LI, "<F1>  Error counts only");
-    prints(POP_R+4, POP_LI, "<F2>  Error summary");
-    prints(POP_R+5, POP_LI, "<F3>  Individual errors");
-    prints(POP_R+6, POP_LI, "<F4>  BadRAM patterns");
-    prints(POP_R+7, POP_LI, "<F5>  Linux memmap");
-    prints(POP_R+8, POP_LI, "<F6>  Bad pages");
-    prints(POP_R+9, POP_LI, "<F10> Exit menu");
+    prints(POP_R+1, POP_LM, "错误报告模式:");
+    prints(POP_R+3, POP_LI, "<F1>  仅错误计数");
+    prints(POP_R+4, POP_LI, "<F2>  错误摘要");
+    prints(POP_R+5, POP_LI, "<F3>  逐条错误");
+    prints(POP_R+6, POP_LI, "<F4>  BadRAM 模式");
+    prints(POP_R+7, POP_LI, "<F5>  Linux 内存映射");
+    prints(POP_R+8, POP_LI, "<F6>  坏页列表");
+    prints(POP_R+9, POP_LI, "<F10> 退出菜单");
     printc(POP_R+3+error_mode, POP_LM, '*');
 
     bool tty_update = enable_tty;
@@ -917,10 +920,10 @@ static bool set_all_cpus(cpu_state_t state, int display_offset)
 static bool add_or_remove_cpu(bool add, int display_offset)
 {
 
-    display_input_message(POP_R+16, "Enter CPU #");
-    int n = read_value(POP_R+16, POP_LM+11, 4, 0);
+    display_input_message(POP_R+16, "输入CPU编号#");
+    int n = read_value(POP_R+16, POP_LM+13, 4, 0);
     if (n < 1 || n >= num_available_cpus) {
-        display_error_message(POP_R+16, "Invalid CPU number");
+        display_error_message(POP_R+16, "无效的CPU编号");
         return false;
     }
     cpu_state[n] = add ? CPU_STATE_ENABLED : CPU_STATE_DISABLED;
@@ -931,16 +934,16 @@ static bool add_or_remove_cpu(bool add, int display_offset)
 
 static bool add_cpu_range(int display_offset)
 {
-    display_input_message(POP_R+16, "Enter first CPU #");
-    int n1 = read_value(POP_R+16, POP_LM+17, 4, 0);
+    display_input_message(POP_R+16, "输入起始CPU编号:");
+    int n1 = read_value(POP_R+16, POP_LM+16, 4, 0);
     if (n1 < 1 || n1 >= num_available_cpus) {
-        display_error_message(POP_R+16, "Invalid CPU number");
+        display_error_message(POP_R+16, "无效的CPU编号");
         return false;
     }
-    display_input_message(POP_R+16, "Enter last CPU #");
+    display_input_message(POP_R+16, "输入结束CPU编号:");
     int n2 = read_value(POP_R+16, POP_LM+16, 4, 0);
     if (n2 < n1 || n2 >= num_available_cpus) {
-        display_error_message(POP_R+16, "Invalid CPU range");
+        display_error_message(POP_R+16, "无效的CPU范围");
         return false;
     }
     for (int i = n1; i <= n2; i++) {
@@ -968,20 +971,20 @@ static void cpu_selection_menu(void)
     int display_offset = 0;
 
     clear_screen_region(POP_REGION);
-    prints(POP_R+1, POP_LM, "CPU Selection:");
-    prints(POP_R+3, POP_LI, "<F1>  Clear selection");
-    prints(POP_R+4, POP_LI, "<F2>  Remove one CPU");
-    prints(POP_R+5, POP_LI, "<F3>  Add one CPU");
-    prints(POP_R+6, POP_LI, "<F4>  Add CPU range");
-    prints(POP_R+7, POP_LI, "<F5>  Add all CPUs");
+    prints(POP_R+1, POP_LM, "CPU 选择:");
+    prints(POP_R+3, POP_LI, "<F1>  清除选择");
+    prints(POP_R+4, POP_LI, "<F2>  移除单个CPU");
+    prints(POP_R+5, POP_LI, "<F3>  添加单个CPU");
+    prints(POP_R+6, POP_LI, "<F4>  添加CPU范围");
+    prints(POP_R+7, POP_LI, "<F5>  添加全部CPU");
     if (cpuid_info.topology.is_hybrid) {
         if (exclude_ecores) {
-            prints(POP_R+8, POP_LI, "<F6>  Include E-Cores");
+            prints(POP_R+8, POP_LI, "<F6>  包含能效核    ");
         } else {
-            prints(POP_R+8, POP_LI, "<F6>  Exclude E-Cores");
+            prints(POP_R+8, POP_LI, "<F6>  排除能效核    ");
         }
     }
-    prints(POP_R+9, POP_LI, "<F10> Exit menu");
+    prints(POP_R+9, POP_LI, "<F10> 退出菜单");
 
     display_cpu_selection(display_offset);
 
@@ -1006,7 +1009,7 @@ static void cpu_selection_menu(void)
             break;
           case '6':
             exclude_ecores = !exclude_ecores;
-            prints(POP_R+8, POP_LI+6, exclude_ecores ? "Exclude" : "Include");
+            prints(POP_R+8, POP_LI+6, exclude_ecores ? "排除能效核    " : "包含能效核    ");
             break;
           case 'u':
             if (display_offset >= SEL_W) {
@@ -1043,10 +1046,10 @@ static void boot_options_menu(void)
     bool tty_update = enable_tty;
     bool exit_menu = false;
     while (!exit_menu) {
-        prints(POP_R+1, POP_LM, "Boot options:");
-        printf(POP_R+3, POP_LI, "<F1>  Boot trace %s", enable_trace ? "disable" : "enable");
-        printf(POP_R+4, POP_LI, "<F2>  ECC polling %s", enable_ecc_polling ? "disable" : "enable");
-        prints(POP_R+9, POP_LI, "<F10> Exit menu");
+        prints(POP_R+1, POP_LM, "启动选项:");
+        printf(POP_R+3, POP_LI, "<F1>  启动跟踪 %s", enable_trace ? "禁用" : "启用");
+        printf(POP_R+4, POP_LI, "<F2>  ECC 轮询 %s", enable_ecc_polling ? "禁用" : "启用");
+        prints(POP_R+9, POP_LI, "<F10> 退出菜单");
 
         if (tty_update) {
             tty_send_region(POP_REGION);
@@ -1123,41 +1126,52 @@ void config_menu(bool initial)
 
     bool tty_update = enable_tty;
     bool exit_menu = false;
+    bool lang_changed = false;
+    bool lang_needs_clear = false;
     while (!exit_menu) {
-        prints(POP_R+1,  POP_LM, "Settings:");
-        prints(POP_R+3,  POP_LI, "<F1>  Test selection");
-        prints(POP_R+4,  POP_LI, "<F2>  Address range");
-        prints(POP_R+5,  POP_LI, "<F3>  CPU sequencing mode");
-        prints(POP_R+6,  POP_LI, "<F4>  Error reporting mode");
+        if (lang_needs_clear) {
+            // Clear the popup once after a language switch so the longer
+            // English text does not stay behind the shorter Chinese text.
+            lang_needs_clear = false;
+            clear_screen_region(POP_REGION);
+        }
+        prints(POP_R+1,  POP_LM, "设置:");
+        prints(POP_R+3,  POP_LI, "<F1>  测试选择");
+        prints(POP_R+4,  POP_LI, "<F2>  地址范围");
+        prints(POP_R+5,  POP_LI, "<F3>  CPU 调度模式");
+        prints(POP_R+6,  POP_LI, "<F4>  错误报告模式");
         if (initial) {
             if (!smp_enabled)  set_foreground_colour(BOLD+BLACK);
-            prints(POP_R+7,  POP_LI, "<F5>  CPU selection");
+            prints(POP_R+7,  POP_LI, "<F5>  CPU 选择");
             if (!smp_enabled)  set_foreground_colour(WHITE);
-            printf(POP_R+8,  POP_LI, "<F6>  CPU Temperature %s", enable_temp_cpu ? "disable" : "enable ");
-            printf(POP_R+9,  POP_LI, "<F7>  RAM Temperature %s", enable_temp_ram ? "disable" : "enable ");
-            prints(POP_R+10, POP_LI, "<F8>  Boot options");
-            prints(POP_R+11, POP_LI, "<F10> Exit menu");
-            prints(POP_R+12, POP_LI, "< S > Save configuration to USB");
-            prints(POP_R+13, POP_LI, "< D > Restore default config");
+            printf(POP_R+8,  POP_LI, "<F6>  CPU 温度 %s", enable_temp_cpu ? "禁用" : "启用");
+            printf(POP_R+9,  POP_LI, "<F7>  内存温度 %s", enable_temp_ram ? "禁用" : "启用");
+            prints(POP_R+10, POP_LI, "<F8>  启动选项");
+            prints(POP_R+11, POP_LI, lang_cn ? "<F9>  语言 : 中文" : "<F9>  Language : English");
+            prints(POP_R+12, POP_LI, "<F10> 退出菜单");
+            prints(POP_R+13, POP_LI, "< S > 保存配置到U盘");
+            prints(POP_R+14, POP_LI, "< D > 恢复默认配置");
         } else {
-            prints(POP_R+7,  POP_LI, "<F5>  Skip current test");
+            prints(POP_R+7,  POP_LI, "<F5>  跳过当前测试");
             if (usb_mass_storage_found || usb_hcd_available()) {
                 if (usb_mass_storage_found && usb_msd_name[0]) {
                     // Truncate the drive name so the line stays inside the popup.
                     usb_msd_name[19] = '\0';
-                    printf(POP_R+8,  POP_LI, "<F6>  Save to %s           ", usb_msd_name);
+                    printf(POP_R+8,  POP_LI, "<F6>  保存到 %s           ", usb_msd_name);
                 } else {
-                    prints(POP_R+8,  POP_LI, "<F6>  Save results to USB");
+                    prints(POP_R+8,  POP_LI, "<F6>  保存结果到U盘");
                 }
-                printf(POP_R+9,  POP_LI, "<F7>  RAM Temperature %s", enable_temp_ram ? "disable" : "enable ");
-                prints(POP_R+10, POP_LI, "<F10> Exit menu");
-                prints(POP_R+11, POP_LI, "< S > Save configuration to USB");
-                prints(POP_R+12, POP_LI, "< D > Restore default config");
+                printf(POP_R+9,  POP_LI, "<F7>  内存温度 %s", enable_temp_ram ? "禁用" : "启用");
+                prints(POP_R+10, POP_LI, lang_cn ? "<F9>  语言 : 中文" : "<F9>  Language : English");
+                prints(POP_R+11, POP_LI, "<F10> 退出菜单");
+                prints(POP_R+12, POP_LI, "< S > 保存配置到U盘");
+                prints(POP_R+13, POP_LI, "< D > 恢复默认配置");
             } else {
-                printf(POP_R+9,  POP_LI, "<F7>  RAM Temperature %s", enable_temp_ram ? "disable" : "enable ");
-                prints(POP_R+10, POP_LI, "<F10> Exit menu");
-                prints(POP_R+11, POP_LI, "< S > Save configuration to USB");
-                prints(POP_R+12, POP_LI, "< D > Restore default config");
+                printf(POP_R+9,  POP_LI, "<F7>  内存温度 %s", enable_temp_ram ? "禁用" : "启用");
+                prints(POP_R+10, POP_LI, lang_cn ? "<F9>  语言 : 中文" : "<F9>  Language : English");
+                prints(POP_R+11, POP_LI, "<F10> 退出菜单");
+                prints(POP_R+12, POP_LI, "< S > 保存配置到U盘");
+                prints(POP_R+13, POP_LI, "< D > 恢复默认配置");
             }
         }
 
@@ -1207,22 +1221,29 @@ void config_menu(bool initial)
                 exit_menu = true;
             }
             break;
+          case '9':
+            // Toggle UI language (persisted via < S > Save like max_pass_num)
+            lang_cn = !lang_cn;
+            lang_changed = true;
+            lang_needs_clear = true;
+            test_list_init();   // rebuild the SIMD-tier test description
+            break;
           case '0':
             exit_menu = true;
             break;
           case 'S':
           case 's':
-            prints(POP_R+14, POP_LM, "Saving config...");
+            prints(POP_R+15, POP_LM, "正在保存配置...");
             save_app_config();
-            clear_popup_row(POP_R+14);
+            clear_popup_row(POP_R+15);
             break;
           case 'D':
           case 'd':
-            prints(POP_R+14, POP_LM, "Restoring defaults...");
+            prints(POP_R+15, POP_LM, "正在恢复默认设置...");
             delete_app_config();
             // We need to restart to re-apply defaults cleanly
             clear_message_area();
-            display_notice("Rebooting...");
+            display_notice("正在重启...");
             reboot();
             break;
           default:
@@ -1232,7 +1253,20 @@ void config_menu(bool initial)
         }
     }
 
-    restore_screen_region(POP_REGION, popup_save_buffer);
+    if (lang_changed) {
+        // The saved popup buffer holds the old language - redraw the whole
+        // screen instead of restoring it, then bring back the live counters.
+        display_init();
+        display_pass_count(pass_num);
+        display_error_count();
+        // Redraw the SPD/SMBIOS/memory-spec info that display_init() clears.
+        post_display_init();
+        if (!initial) {
+            display_status(testpass == 1 ? "通过  " : (testpass == 2 ? "失败! " : "测试中"));
+        }
+    } else {
+        restore_screen_region(POP_REGION, popup_save_buffer);
+    }
     set_background_colour(palette.background);
 
     if (enable_tty) {
@@ -1330,6 +1364,7 @@ void save_app_config(void)
     cfg.version = APP_CONFIG_VERSION;
     cfg.max_pass_num = max_pass_num;
     cfg.continue_on_error = continue_on_error;
+    cfg.language = lang_cn ? 1 : 0;
     for (int i = 0; i < NUM_TEST_PATTERNS; i++) {
         cfg.test_enabled[i] = test_list[i].enabled;
         cfg.test_sequence[i] = test_sequence[i];
@@ -1367,12 +1402,24 @@ void initial_config(void)
                 uint32_t read_size = 0;
                 
                 if (fat32_read_file(&fs, cfg_filename, &cfg, sizeof(cfg), &read_size)) {
-                    if (read_size == sizeof(cfg) && cfg.magic == APP_CONFIG_MAGIC) {
+                    // Accept both the current layout and the older one that
+                    // lacks the trailing "language" field.
+                    size_t legacy_size = offsetof(app_config_t, language);
+                    if ((read_size == sizeof(cfg) || read_size == legacy_size) && cfg.magic == APP_CONFIG_MAGIC) {
                         max_pass_num = cfg.max_pass_num;
                         continue_on_error = cfg.continue_on_error;
                         for (int i = 0; i < NUM_TEST_PATTERNS; i++) {
                             test_list[i].enabled = cfg.test_enabled[i];
                             test_sequence[i] = cfg.test_sequence[i];
+                        }
+                        if (read_size == sizeof(cfg)) {
+                            lang_cn = (cfg.language != 0);
+                            if (!lang_cn) {
+                                // The screen was drawn in Chinese above -
+                                // redraw it in English and refresh the notice.
+                                display_init();
+                                display_initial_notice();
+                            }
                         }
                     }
                 }
@@ -1387,7 +1434,7 @@ void initial_config(void)
             switch (get_key()) {
               case ESC:
                 clear_message_area();
-                display_notice("Rebooting...");
+                display_notice("正在重启...");
                 reboot();
                 break;
               case '1':

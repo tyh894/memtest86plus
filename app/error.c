@@ -355,7 +355,7 @@ static void common_err(error_type_t type, uintptr_t addr, testword_t good, testw
     if (!continue_on_error && error_count > 0
         && smp_my_cpu_num() == master_cpu) {
         testpass = 2;
-        display_status("Failed!");
+        display_status("失败! ");
         display_big_status(false);
         while (1) {
             usleep(200);
@@ -437,7 +437,7 @@ void error_update(void)
 
         // Only fail if error is uncorrected
         if (error_count > 0) {
-            display_status("Failed!");
+            display_status("失败! ");
 
             // Display FAIL banner on first uncorrectable error.
             // Don't rely on (error_count == 1): several errors can be

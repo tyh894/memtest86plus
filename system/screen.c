@@ -8,6 +8,7 @@
 #include "bootparams.h"
 
 #include "font.h"
+#include "font_cn.h"
 #include "vmem.h"
 
 #include "string.h"
@@ -56,7 +57,7 @@ static const rgb_value_t vga_pallete[16] = {
 
 static vga_buffer_t *vga_buffer = NULL;
 
-vga_buffer_t shadow_buffer;
+shadow_char_t shadow_buffer[SCREEN_HEIGHT][SCREEN_WIDTH];
 
 static int lfb_bytes_per_pixel = 0;
 
@@ -116,14 +117,41 @@ static void parse_cmd_line(uintptr_t cmd_line_addr, uint32_t cmd_line_size)
     }
 }
 
-static void vga_put_char(int row, int col, uint8_t ch, uint8_t attr)
+static void vga_put_char(int row, int col, uint16_t id, uint8_t attr)
 {
-    shadow_buffer[row][col].ch   = ch;
+    shadow_buffer[row][col].id   = id;
     shadow_buffer[row][col].attr = attr;
 
     if (vga_buffer) {
-        (*vga_buffer)[row][col].value = shadow_buffer[row][col].value;
+        /* Text mode has no CJK font: fall back to '?'. */
+        uint8_t ch = ' ';
+        if (id != GLYPH_CONT) {
+            ch = id <= 0xff ? (uint8_t)id : '?';
+        }
+        (*vga_buffer)[row][col].ch   = ch;
+        (*vga_buffer)[row][col].attr = attr;
     }
+}
+
+/*
+ * Returns the pixel width of the given glyph (8 for ASCII/CP437,
+ * 16 for CJK).
+ */
+static int glyph_pixel_width(uint16_t id)
+{
+    return id >= GLYPH_CN_BASE ? 2 * FONT_WIDTH : FONT_WIDTH;
+}
+
+/*
+ * Returns the given glyph pixel: x/y are pixel coordinates relative to the
+ * top-left corner of the glyph.
+ */
+static int glyph_bit(uint16_t id, int y, int x)
+{
+    if (id >= GLYPH_CN_BASE) {
+        return (cn_font_data[id - GLYPH_CN_BASE][y] >> (15 - x)) & 1;
+    }
+    return (font_data[id][y] >> (7 - x)) & 1;
 }
 
 static int lfb_offset(int row, int col, int x, int y, int bpp)
@@ -138,154 +166,155 @@ static int lfb_offset(int row, int col, int x, int y, int bpp)
     }
 }
 
-static void lfb8_put_char(int row, int col, uint8_t ch, uint8_t attr)
+static void lfb8_put_char(int row, int col, uint16_t id, uint8_t attr)
 {
-    if (shadow_buffer[row][col].ch   == ch &&
+    if (shadow_buffer[row][col].id   == id &&
         shadow_buffer[row][col].attr == attr)
         return;
 
-    shadow_buffer[row][col].ch   = ch;
+    shadow_buffer[row][col].id   = id;
     shadow_buffer[row][col].attr = attr;
+
+    /* The right half of a CJK glyph is drawn together with the left half. */
+    if (id == GLYPH_CONT) return;
 
     uint8_t fg_colour = attr % 16;
     uint8_t bg_colour = attr / 16;
 
+    int glyph_width = glyph_pixel_width(id);
+
     if (lfb_rotate) {
         for (int y = 0; y < FONT_HEIGHT; y++) {
-            uint8_t font_row = font_data[ch][y];
-            for (int x = 0; x < FONT_WIDTH; x++) {
+            for (int x = 0; x < glyph_width; x++) {
                 uint8_t *pixel = (uint8_t *)lfb_base + lfb_offset(row, col, x, y, 1);
-                *pixel = font_row & 0x80 ? fg_colour : bg_colour;
-                font_row <<= 1;
+                *pixel = glyph_bit(id, y, x) ? fg_colour : bg_colour;
             }
         }
     } else {
         uint8_t *pixel_row = (uint8_t *)lfb_base + row * FONT_HEIGHT * lfb_stride + col * FONT_WIDTH;
         for (int y = 0; y < FONT_HEIGHT; y++) {
-            uint8_t font_row = font_data[ch][y];
-            for (int x = 0; x < FONT_WIDTH; x++) {
-                pixel_row[x] = font_row & 0x80 ? fg_colour : bg_colour;
-                font_row <<= 1;
+            for (int x = 0; x < glyph_width; x++) {
+                pixel_row[x] = glyph_bit(id, y, x) ? fg_colour : bg_colour;
             }
             pixel_row += lfb_stride;
         }
    }
 }
 
-static void lfb16_put_char(int row, int col, uint8_t ch, uint8_t attr)
+static void lfb16_put_char(int row, int col, uint16_t id, uint8_t attr)
 {
-    if (shadow_buffer[row][col].ch   == ch &&
+    if (shadow_buffer[row][col].id   == id &&
         shadow_buffer[row][col].attr == attr)
         return;
 
-    shadow_buffer[row][col].ch   = ch;
+    shadow_buffer[row][col].id   = id;
     shadow_buffer[row][col].attr = attr;
+
+    if (id == GLYPH_CONT) return;
 
     uint16_t fg_colour = lfb_pallete[attr % 16];
     uint16_t bg_colour = lfb_pallete[attr / 16];
 
+    int glyph_width = glyph_pixel_width(id);
+
     if (lfb_rotate) {
         for (int y = 0; y < FONT_HEIGHT; y++) {
-            uint8_t font_row = font_data[ch][y];
-            for (int x = 0; x < FONT_WIDTH; x++) {
+            for (int x = 0; x < glyph_width; x++) {
                 uint16_t *pixel = (uint16_t *)lfb_base + lfb_offset(row, col, x, y, 1);
-                *pixel = font_row & 0x80 ? fg_colour : bg_colour;
-                font_row <<= 1;
+                *pixel = glyph_bit(id, y, x) ? fg_colour : bg_colour;
             }
         }
     } else {
         uint16_t *pixel_row = (uint16_t *)lfb_base + row * FONT_HEIGHT * lfb_stride + col * FONT_WIDTH;
         for (int y = 0; y < FONT_HEIGHT; y++) {
-            uint8_t font_row = font_data[ch][y];
-            for (int x = 0; x < FONT_WIDTH; x++) {
-                pixel_row[x] = font_row & 0x80 ? fg_colour : bg_colour;
-                font_row <<= 1;
+            for (int x = 0; x < glyph_width; x++) {
+                pixel_row[x] = glyph_bit(id, y, x) ? fg_colour : bg_colour;
             }
             pixel_row += lfb_stride;
         }
     }
 }
 
-static void lfb24_put_char(int row, int col, uint8_t ch, uint8_t attr)
+static void lfb24_put_char(int row, int col, uint16_t id, uint8_t attr)
 {
 
-    if (shadow_buffer[row][col].ch   == ch &&
+    if (shadow_buffer[row][col].id   == id &&
         shadow_buffer[row][col].attr == attr)
         return;
 
-    shadow_buffer[row][col].ch   = ch;
+    shadow_buffer[row][col].id   = id;
     shadow_buffer[row][col].attr = attr;
+
+    if (id == GLYPH_CONT) return;
 
     uint32_t fg_colour = lfb_pallete[attr % 16];
     uint32_t bg_colour = lfb_pallete[attr / 16];
 
+    int glyph_width = glyph_pixel_width(id);
+
     if (lfb_rotate) {
         for (int y = 0; y < FONT_HEIGHT; y++) {
-            uint8_t font_row = font_data[ch][y];
-            for (int x = 0; x < FONT_WIDTH; x++) {
+            for (int x = 0; x < glyph_width; x++) {
                 uint8_t *pixel = (uint8_t *)lfb_base + lfb_offset(row, col, x, y, 3);
-                uint32_t colour = font_row & 0x80 ? fg_colour : bg_colour;
+                uint32_t colour = glyph_bit(id, y, x) ? fg_colour : bg_colour;
                 pixel[0] = colour & 0xff; colour >>= 8;
                 pixel[1] = colour & 0xff; colour >>= 8;
                 pixel[2] = colour & 0xff;
-                font_row <<= 1;
             }
         }
     } else {
         uint8_t *pixel_row = (uint8_t *)lfb_base + row * FONT_HEIGHT * lfb_stride + col * FONT_WIDTH * 3;
         for (int y = 0; y < FONT_HEIGHT; y++) {
-            uint8_t font_row = font_data[ch][y];
-            for (int x = 0; x < FONT_WIDTH * 3; x += 3) {
-                uint32_t colour = font_row & 0x80 ? fg_colour : bg_colour;
+            for (int x = 0; x < glyph_width * 3; x += 3) {
+                uint32_t colour = glyph_bit(id, y, x / 3) ? fg_colour : bg_colour;
                 pixel_row[x+0] = colour & 0xff; colour >>= 8;
                 pixel_row[x+1] = colour & 0xff; colour >>= 8;
                 pixel_row[x+2] = colour & 0xff;
-                font_row <<= 1;
             }
             pixel_row += lfb_stride;
         }
     }
 }
 
-static void lfb32_put_char(int row, int col, uint8_t ch, uint8_t attr)
+static void lfb32_put_char(int row, int col, uint16_t id, uint8_t attr)
 {
-    if (shadow_buffer[row][col].ch   == ch &&
+    if (shadow_buffer[row][col].id   == id &&
         shadow_buffer[row][col].attr == attr)
         return;
 
-    shadow_buffer[row][col].ch   = ch;
+    shadow_buffer[row][col].id   = id;
     shadow_buffer[row][col].attr = attr;
+
+    if (id == GLYPH_CONT) return;
 
     uint32_t fg_colour = lfb_pallete[attr % 16];
     uint32_t bg_colour = lfb_pallete[attr / 16];
 
+    int glyph_width = glyph_pixel_width(id);
+
     if (lfb_rotate) {
         for (int y = 0; y < FONT_HEIGHT; y++) {
-            uint8_t font_row = font_data[ch][y];
-            for (int x = 0; x < FONT_WIDTH; x++) {
+            for (int x = 0; x < glyph_width; x++) {
                 uint32_t *pixel = (uint32_t *)lfb_base + lfb_offset(row, col, x, y, 1);
-                *pixel = font_row & 0x80 ? fg_colour : bg_colour;
-                font_row <<= 1;
+                *pixel = glyph_bit(id, y, x) ? fg_colour : bg_colour;
             }
         }
     } else {
         uint32_t *pixel_row = (uint32_t *)lfb_base + row * FONT_HEIGHT * lfb_stride + col * FONT_WIDTH;
         for (int y = 0; y < FONT_HEIGHT; y++) {
-            uint8_t font_row = font_data[ch][y];
-            for (int x = 0; x < FONT_WIDTH; x++) {
-                pixel_row[x] = font_row & 0x80 ? fg_colour : bg_colour;
-                font_row <<= 1;
+            for (int x = 0; x < glyph_width; x++) {
+                pixel_row[x] = glyph_bit(id, y, x) ? fg_colour : bg_colour;
             }
             pixel_row += lfb_stride;
         }
     }
 }
 
-static void (*put_char)(int, int, uint8_t, uint8_t) = vga_put_char;
+static void (*put_char)(int, int, uint16_t, uint8_t) = vga_put_char;
 
-static void put_value(int row, int col, uint16_t value)
+static void put_cell(int row, int col, shadow_char_t cell)
 {
-    put_char(row, col, value % 256, value / 256);
+    put_char(row, col, cell.id, cell.attr);
 }
 
 //------------------------------------------------------------------------------
@@ -443,7 +472,7 @@ void scroll_screen_region(int start_row, int start_col, int end_row, int end_col
     for (int row = start_row; row <= end_row; row++) {
         for (int col = start_col; col <= end_col; col++) {
             if (row < end_row) {
-                put_value(row, col, shadow_buffer[row + 1][col].value);
+                put_cell(row, col, shadow_buffer[row + 1][col]);
             } else {
                 put_char(row, col, ' ', current_attr);
             }
@@ -451,40 +480,77 @@ void scroll_screen_region(int start_row, int start_col, int end_row, int end_col
     }
 }
 
-void save_screen_region(int start_row, int start_col, int end_row, int end_col, uint16_t buffer[])
+void save_screen_region(int start_row, int start_col, int end_row, int end_col, shadow_char_t buffer[])
 {
     if (start_row < 0) start_row = 0;
     if (start_col < 0) start_col = 0;
 
-    uint16_t *dst = &buffer[0];
+    shadow_char_t *dst = &buffer[0];
     for (int row = start_row; row <= end_row; row++) {
         if (row >= SCREEN_HEIGHT) break;
         for (int col = start_col; col <= end_col; col++) {
             if (col >= SCREEN_WIDTH) break;
-            *dst++ = shadow_buffer[row][col].value;
+            *dst++ = shadow_buffer[row][col];
         }
     }
 }
 
-void restore_screen_region(int start_row, int start_col, int end_row, int end_col, const uint16_t buffer[])
+void restore_screen_region(int start_row, int start_col, int end_row, int end_col, const shadow_char_t buffer[])
 {
     if (start_row < 0) start_row = 0;
     if (start_col < 0) start_col = 0;
 
-    const uint16_t *src = &buffer[0];
+    const shadow_char_t *src = &buffer[0];
     for (int row = start_row; row <= end_row; row++) {
         if (row >= SCREEN_HEIGHT) break;
         for (int col = start_col; col <= end_col; col++) {
             if (col >= SCREEN_WIDTH) break;
-            put_value(row, col, *src++);
+            put_cell(row, col, *src++);
         }
     }
 }
 
-void print_char(int row, int col, char ch)
+void print_char(int row, int col, int ch)
 {
     if (row < 0 || row >= SCREEN_HEIGHT) return;
     if (col < 0 || col >= SCREEN_WIDTH)  return;
 
     put_char(row, col, ch, (current_attr & 0x0f) | (shadow_buffer[row][col].attr & 0xf0));
+}
+
+/*
+ * Maps a Unicode code point to a glyph id: code points below 0x100 map
+ * directly onto the font_data glyphs, CJK code points are looked up in
+ * cn_font_data, anything else maps to '?'.
+ */
+static uint16_t resolve_glyph(uint32_t codepoint)
+{
+    if (codepoint < 0x100) return (uint16_t)codepoint;
+
+    int index = cn_font_lookup(codepoint);
+    if (index < 0) return '?';
+
+    return GLYPH_CN_BASE + index;
+}
+
+int print_codepoint(int row, int col, uint32_t codepoint)
+{
+    if (row < 0 || row >= SCREEN_HEIGHT) return col;
+    if (col < 0 || col >= SCREEN_WIDTH)  return col;
+
+    uint16_t id = resolve_glyph(codepoint);
+
+    /* A double-width glyph does not fit in the last screen column. */
+    if (id >= GLYPH_CN_BASE && col + 1 >= SCREEN_WIDTH) {
+        id = '?';
+    }
+
+    put_char(row, col, id, (current_attr & 0x0f) | (shadow_buffer[row][col].attr & 0xf0));
+
+    int width = (id >= GLYPH_CN_BASE) ? 2 : 1;
+    if (width == 2 && col + 1 < SCREEN_WIDTH) {
+        put_char(row, col + 1, GLYPH_CONT, (current_attr & 0x0f) | (shadow_buffer[row][col + 1].attr & 0xf0));
+    }
+
+    return col + width;
 }

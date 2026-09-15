@@ -26,6 +26,7 @@
 
 #include "config.h"
 #include "error.h"
+#include "lang.h"
 #include "build_version.h"
 
 #include "tests.h"
@@ -78,7 +79,7 @@ static int prev_sec = -1;               // previous second
 static bool timed_update_done = false;  // update cycle status
 
 bool big_status_displayed = false;
-static uint16_t popup_status_save_buffer[POP_STAT_W * POP_STAT_H];
+static shadow_char_t popup_status_save_buffer[POP_STAT_W * POP_STAT_H];
 
 //------------------------------------------------------------------------------
 // Variables
@@ -144,22 +145,22 @@ void display_init(void)
     set_foreground_colour(palette.title_foreground);
     set_background_colour(palette.title_background);
     clear_screen_region(0, 0, 0, 27);
-    prints(0, 0, "  HEROSYS BRUNIN TESET" MT_VERSION);
+    prints(0, 0, lang_cn ? " HEROSYS 内存老化测试V"MT_VERSION : " HEROSYS BURN-IN TESTV"MT_VERSION);
     set_foreground_colour(RED);
-    printc(0, 15, '+');
+    printc(0, 27, '+');
     set_foreground_colour(palette.foreground);
     set_background_colour(palette.background);
-    prints(1, 0, "CLK/Temp:   N/A             | Pass   %");
-    prints(2, 0, "L1 Cache:   N/A             | Test   %");
-    prints(3, 0, "L2 Cache:   N/A             | Test #");
-    prints(4, 0, "L3 Cache:   N/A             | Testing:");
-    prints(5, 0, "Memory  :   N/A             | Pattern:");
+    prints(1, 0, "时钟/温度: N/A              | 轮次   %");
+    prints(2, 0, "L1 缓存:  N/A               | 测试   %");
+    prints(3, 0, "L2 缓存:  N/A               | 测试 #");
+    prints(4, 0, "L3 缓存:  N/A               | 测试项:");
+    prints(5, 0, "内存容量: N/A               | 数据模式:");
 //  prints(6, 0, "--------------------------------------------------------------------------------");
-    prints(7, 0, "Pass:           Errors:                   | Time:           Status: Init.");
+    prints(7, 0, "轮次:          错误:                      |时间:           状态:  初始化");
 //  prints(9, 0, "--------------------------------------------------------------------------------");
 
     if (ecc_status.ecc_enabled) {
-        prints(7, 16, "Err:        ECC:");
+        prints(7, 16, "错误:       ECC:");
     }
 
     for (int i = 0; i < 80; i++) {
@@ -180,7 +181,7 @@ void display_init(void)
     set_foreground_colour(palette.footer_foreground);
     set_background_colour(palette.footer_background);
     clear_screen_region(ROW_FOOTER, 0, ROW_FOOTER, SCREEN_WIDTH - 1);
-    prints(ROW_FOOTER, 0, " <ESC> Exit <F1> Configuration <F2> Quick/Full <F3> D3 <F4> D4 <F5> D5 <F11> 2-");
+    prints(ROW_FOOTER, 0, " <ESC> 退出 <F1> 配置 <F2> 快速/完整 <F3> D3 <F4> D4 <F5> D5 <F11> 2-");
 
     set_foreground_colour(palette.foreground);
     set_background_colour(palette.background);
@@ -345,12 +346,12 @@ void display_start_run(void)
     clear_screen_region(7, 49, 7, 57);                      // run time
 
     if (ecc_status.ecc_enabled) {
-        clear_screen_region(7, 5, 7, 9);                    // pass number
-        clear_screen_region(7, 20, 7, 27);                  // error count
+        clear_screen_region(7, 7, 7, 9);                    // pass number
+        clear_screen_region(7, 22, 7, 31);                  // error count
         clear_screen_region(7, 33, 7, 41);                  // ecc error count
     } else {
-        clear_screen_region(7, 5, 7, 9);                    // pass number
-        clear_screen_region(7, 25, 7, 41);                  // error count
+        clear_screen_region(7, 7, 7, 9);                    // pass number
+        clear_screen_region(7, 22, 7, 41);                  // error count
     }
 
     display_pass_count(0);
@@ -362,7 +363,7 @@ void display_start_run(void)
         next_spin_time = run_start_time + SPINNER_PERIOD * clks_per_msec;
     }
     display_spinner('-');
-    display_status("Testing");
+    display_status("测试中");
 
     if (enable_tty){
         // tty_full_redraw();
@@ -481,7 +482,7 @@ void display_big_status(bool pass)
     }
 
     prints(POP_STAT_R+8, POP_STAT_C+5, "                                    ");
-    prints(POP_STAT_R+9, POP_STAT_C+5, "Press any key to remove this banner ");
+    prints(POP_STAT_R+9, POP_STAT_C+5, "按任意键关闭此提示 ");
 
     set_foreground_colour(palette.foreground);
     set_background_colour(palette.background);
@@ -515,7 +516,7 @@ void check_input(void)
     switch (input_key) {
       case ESC:
         clear_message_area();
-        display_notice("Rebooting...");
+        display_notice("正在重启...");
         reboot();
         break;
       case '1':
@@ -556,7 +557,7 @@ void scroll(void)
         // single-step wait is only available to it.
         if (smp_my_cpu_num() == master_cpu) {
             if (scroll_lock) {
-                display_footer_message("<Enter> Single step     ");
+                display_footer_message("<Enter> 单步执行     ");
             }
             scroll_wait = true;
             do {
@@ -690,7 +691,7 @@ void do_tick(int my_cpu)
                 // If 5 seconds pass without authorization, show message
                 if (!need_dongle_msg_shown && (now - check_start_tick) > (5000ULL * clks_per_msec)) {
                     set_foreground_colour(RED);
-                    prints(16, 28, "Need Dongle! Waiting...");
+                    prints(16, 28, "需要加密狗！等待中...");
                     set_foreground_colour(palette.foreground);
                     need_dongle_msg_shown = true;
                 }
@@ -720,7 +721,7 @@ void do_tick(int my_cpu)
         int overflow_cpu = stack_canary_check();
         if (overflow_cpu >= 0 && overflow_cpu != last_overflow_cpu) {
             last_overflow_cpu = overflow_cpu;
-            do_trace(overflow_cpu, "CPU stack overflow detected - test results are unreliable");
+            do_trace(overflow_cpu, "检测到CPU栈溢出 - 测试结果不可靠");
         }
 
         // Display FAIL banner if (new) errors detected

@@ -48,28 +48,28 @@ typedef enum {
 #define display_cpu_model(str)
 
 #define display_cpu_clk(freq) \
-    printf(1, 10, "%iMHz", freq)
+    printf(1, 11, "%iMHz", freq)
 
 #define display_cpu_temperature(actual_cpu_temp, max_cpu_temp, offset) \
     { \
         clear_screen_region(1, 18, 1, 27); \
-        printf(1, 25 - offset, "%i/%i%cC", actual_cpu_temp, max_cpu_temp, 0xF8); \
+        printf(1, 25 - offset, "%i/%i℃", actual_cpu_temp, max_cpu_temp); \
     }
 
 #define display_cpu_addr_mode(str) \
     prints(4, 75, str)
 
 #define display_l1_cache_size(size) \
-    printf(2, 9, "%6kB", (uintptr_t)(size))
+    printf(2, 10, "%6kB", (uintptr_t)(size))
 
 #define display_l2_cache_size(size) \
-    printf(3, 9, "%6kB", (uintptr_t)(size))
+    printf(3, 10, "%6kB", (uintptr_t)(size))
 
 #define display_l3_cache_size(size) \
-    printf(4, 9, "%6kB", (uintptr_t)(size))
+    printf(4, 10, "%6kB", (uintptr_t)(size))
 
 #define display_memory_size(size) \
-    printf(5, 9, "%6kB", (uintptr_t)(size))
+    printf(5, 10, "%6kB", (uintptr_t)(size))
 
 #define display_l1_cache_speed(speed) \
     printf(2, 18, "%S6kB/s", (uintptr_t)(speed))
@@ -84,10 +84,13 @@ typedef enum {
     printf(5, 18, "%S6kB/s", (uintptr_t)(speed))
 
 #define display_ram_temperature(ram_temp, idx) \
-    printf(idx+ROW_SPD, SCREEN_WIDTH-4, "%i%cC", ram_temp, 0xF8);
+    { \
+        clear_screen_region(idx+ROW_SPD, SCREEN_WIDTH-5, idx+ROW_SPD, SCREEN_WIDTH-1); \
+        printf(idx+ROW_SPD, SCREEN_WIDTH-4, "%i℃", ram_temp); \
+    }
 
 #define display_status(status) \
-    prints(7, 68, status)
+    prints(7, 66, status)
 
 // CPU / SMP / memory spec info removed from the status line (left side is
 // now occupied by Pass/Errors). Kept as no-ops so call sites stay unchanged.
@@ -151,7 +154,7 @@ typedef enum {
 #define display_test_addresses(pb, pe, total) \
     { \
         clear_screen_region(4, 39, 4, SCREEN_WIDTH - 6); \
-        printf(4, 39, "%kB - %kB [%kB of %kB]", pb, pe, (pe) - (pb), total); \
+        printf(4, 39, "%kB - %kB [%kB / %kB]", pb, pe, (pe) - (pb), total); \
     }
 
 #define display_test_stage_description(...) \
@@ -185,11 +188,11 @@ typedef enum {
     printi(7, 7, count, 0, false, true)
 
 #define display_err_count_without_ecc(count) \
-    printi(7, 25, count, 0, false, true)
+    printi(7, 22, count, 0, false, true)
 
 #define display_err_count_with_ecc(count_err, count_ecc) \
     { \
-        printi(7, 21, count_err, 0, false, true); \
+        printi(7, 22, count_err, 0, false, true); \
         printi(7, 33, count_ecc, 0, false, true); \
     }
 
@@ -206,7 +209,7 @@ typedef enum {
     printf(scroll_message_row, col, __VA_ARGS__)
 
 #define display_notice(str) \
-    prints(ROW_MESSAGE_T + 8, (SCREEN_WIDTH - strlen(str)) / 2, str)
+    prints(ROW_MESSAGE_T + 8, (SCREEN_WIDTH - str_width(str)) / 2, str)
 
 #define display_notice_with_args(length, ...) \
     printf(ROW_MESSAGE_T + 8, (SCREEN_WIDTH - length) / 2, __VA_ARGS__)

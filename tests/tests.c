@@ -23,6 +23,7 @@
 
 #include "barrier.h"
 
+#include "lang.h"
 #include "config.h"
 #include "display.h"
 #include "test.h"
@@ -51,22 +52,22 @@
 
 test_pattern_t test_list[NUM_TEST_PATTERNS] = {
     // ena,  cpu, stgs, itrs, errs, description
-    { true,  ONE,    1,    6,    0, "[Address test, walking ones, no cache] "},
-    {true,  ONE,    1,    6,    0, "[Address test, own address in window]  "},
-    { true,  ONE,    2,    6,    0, "[Address test, own address + window]   "},
-    { true,  PAR,    1,   32,    0, "[Bus stress, R/W turnaround, random]   "},
-    { true,  PAR,    1,    6,    0, "[Moving inversions, 1s & 0s]           "},
-    { true,  PAR,    1,  128,    0, "[Moving inversions, random sequence]   "},
-    { true,  PAR,    1,    3,    0, "[Moving inversions, 8 bit pattern]     "},
-    { true,  PAR,    1,    8,    0, "[Modulo 20, random pattern]            "},
-    { true,  PAR,    1,   81,    0, "[Block move]                           "},
+    { true,  ONE,    1,    6,    0, "[地址测试，逐位走1，无缓存]"},
+    {true,  ONE,    1,    6,    0, "[地址测试，窗口内自身地址] "},
+    { true,  ONE,    2,    6,    0, "[地址测试，自身地址+窗口]   "},
+    { true,  PAR,    1,   32,    0, "[总线压力，读写切换，随机] "},
+    { true,  PAR,    1,    6,    0, "[移动取反，全1和全0]           "},
+    { true,  PAR,    1,  128,    0, "[移动取反，随机序列]          "},
+    { true,  PAR,    1,    3,    0, "[移动取反，8位模式]            "},
+    { true,  PAR,    1,    8,    0, "[取模20，随机模式]              "},
+    { true,  PAR,    1,   81,    0, "[块移动]                            "},
 #if TESTWORD_WIDTH > 32
-    { true,  PAR,    1,    1,    0, "[Moving inversions, 64 bit pattern]    "},
+    { true,  PAR,    1,    1,    0, "[移动取反，64位模式]          "},
 #else
-    { true,  PAR,    1,    1,    0, "[Moving inversions, 32 bit pattern]    "},
+    { true,  PAR,    1,    1,    0, "[移动取反，32位模式]          "},
 #endif
-    { true,  PAR,   12,  120,    0, "[Bit fade test, 0s, 1s, random]        "},
-    {false,  ONE,    1,   24,    0, "[Rowhammer, Blacksmith-style]          "},
+    { true,  PAR,   12,  120,    0, "[位衰减测试，0/1/随机]         "},
+    {false,  ONE,    1,   24,    0, "[Rowhammer，Blacksmith式]            "},
 };
 
 int ticks_per_pass[NUM_PASS_TYPES];
@@ -101,8 +102,8 @@ void test_list_init(void)
     }
 
     // Rewrite the description to show the SIMD tier used by the test,
-    // e.g. "[Moving inversions, random (AVX2)]".
-    const char *prefix = "[Moving inversions, random (";
+    // e.g. "[移动取反，随机 (AVX2)]".
+    const char *prefix = lang_cn ? "[移动取反，随机 (" : "[Moving inversions, random (";
     char *desc = test_list[MOV_INV_RNG_TEST].description;
 
     int i = 0;

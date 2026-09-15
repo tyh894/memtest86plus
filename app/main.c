@@ -866,7 +866,7 @@ void main(void)
                 if (pass_num >= max_pass_num)
                 {
                     testpass = 1;
-                    display_status("Pass   ");
+                    display_status("通过  ");
                     display_big_status(true);
                     while (1)
                     {

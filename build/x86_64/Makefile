@@ -34,6 +34,7 @@ SYS_OBJS = system/acpi.o \
            system/ehci.o \
            system/fat32.o \
            system/font.o \
+           system/font_cn.o \
            system/heap.o \
            system/hwquirks.o \
            system/keyboard.o \
@@ -65,6 +66,7 @@ IMC_SRCS = $(wildcard ../../system/imc/x86/*.c)
 IMC_OBJS = $(subst ../../,,$(IMC_SRCS:.c=.o))
 
 LIB_OBJS = lib/barrier.o \
+           lib/lang.o \
            lib/print.o \
            lib/read.o \
            lib/string.o \

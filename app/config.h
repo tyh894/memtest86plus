@@ -100,6 +100,8 @@ typedef struct {
     bool continue_on_error;
     bool test_enabled[CONFIG_MAX_TESTS];
     int test_sequence[CONFIG_MAX_TESTS];
+    int language;           // 1 = Chinese, 0 = English (appended; older
+                            // CONFIG.BIN files simply lack this field)
     // Add future configuration items here
 } app_config_t;
 

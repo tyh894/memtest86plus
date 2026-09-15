@@ -21,9 +21,16 @@ int printc(int row, int col, char c);
 
 /**
  * Prints a string on screen starting at location (row,col) and returns the
- * next column after the string.
+ * next column after the string. The string may contain UTF-8 encoded CJK
+ * characters, which are rendered with double-width glyphs.
  */
 int prints(int row, int col, const char *str);
+
+/**
+ * Returns the display width in character cells of the given UTF-8 string
+ * (CJK characters count as two cells).
+ */
+int str_width(const char *str);
 
 /**
  * Prints a signed decimal number on screen starting at location (row,col) in

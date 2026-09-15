@@ -1,0 +1,112 @@
+app\config.c	463	按 <F1> 配置，<F2> 禁用 SMP，<Enter> 开始测试
+app\config.c	465	按 <F1> 配置，<F2> 启用 SMP，<Enter> 开始测试 
+app\config.c	521	当前选择:
+app\config.c	522	当前序列:
+app\config.c	524	  (滚动 U D)
+app\config.c	570	输入测试编号#
+app\config.c	573	无效的测试编号
+app\config.c	608	输入序列 %u#
+app\config.c	620	重复的测试编号
+app\config.c	638	输入起始测试编号:
+app\config.c	644	输入结束测试编号:
+app\config.c	647	无效的测试范围
+app\config.c	659	输入测试循环次数:
+app\config.c	664	<F7>  测试循环次数 : %u      
+app\config.c	671	测试选择:
+app\config.c	672	<F1>  清除选择
+app\config.c	673	<F2>  移除单个测试
+app\config.c	674	<F3>  添加单个测试
+app\config.c	675	<F4>  添加测试范围
+app\config.c	676	<F5>  添加全部测试
+app\config.c	677	<F6>  设置测试顺序
+app\config.c	679	<F8>  出错时继续 : %s     
+app\config.c	679	是
+app\config.c	679	否
+app\config.c	680	<F10> 退出菜单
+app\config.c	739	必须至少选择一个测试
+app\config.c	759	地址范围:
+app\config.c	760	<F1>  设置下限
+app\config.c	761	<F2>  设置上限
+app\config.c	762	<F3>  测试全部内存
+app\config.c	764	当前范围: %kB - %kB
+app\config.c	778	输入下限: 
+app\config.c	785	下限必须小于上限
+app\config.c	789	输入上限: 
+app\config.c	796	上限必须大于下限
+app\config.c	835	CPU 调度模式:
+app\config.c	836	<F1>  并行    (PAR)
+app\config.c	837	<F2>  串行  (SEQ)
+app\config.c	838	<F3>  轮询 (RR)
+app\config.c	891	错误报告模式:
+app\config.c	892	<F1>  仅错误计数
+app\config.c	893	<F2>  错误摘要
+app\config.c	894	<F3>  逐条错误
+app\config.c	895	<F4>  BadRAM 模式
+app\config.c	896	<F5>  Linux 内存映射
+app\config.c	897	<F6>  坏页列表
+app\config.c	957	输入CPU编号#
+app\config.c	960	无效的CPU编号
+app\config.c	971	输入起始CPU编号:
+app\config.c	977	输入结束CPU编号:
+app\config.c	980	无效的CPU范围
+app\config.c	1008	CPU 选择:
+app\config.c	1010	<F2>  移除单个CPU
+app\config.c	1011	<F3>  添加单个CPU
+app\config.c	1012	<F4>  添加CPU范围
+app\config.c	1013	<F5>  添加全部CPU
+app\config.c	1016	<F6>  包含能效核    
+app\config.c	1018	<F6>  排除能效核    
+app\config.c	1046	排除能效核    
+app\config.c	1046	包含能效核    
+app\config.c	1083	启动选项:
+app\config.c	1084	<F1>  启动跟踪 %s
+app\config.c	1084	禁用
+app\config.c	1084	启用
+app\config.c	1085	<F2>  ECC 轮询 %s
+app\config.c	1164	设置:
+app\config.c	1165	<F1>  测试选择
+app\config.c	1166	<F2>  地址范围
+app\config.c	1167	<F3>  CPU 调度模式
+app\config.c	1168	<F4>  错误报告模式
+app\config.c	1171	<F5>  CPU 选择
+app\config.c	1173	<F6>  CPU 温度 %s
+app\config.c	1174	<F7>  内存温度 %s
+app\config.c	1175	<F8>  启动选项
+app\config.c	1177	< S > 保存配置到U盘
+app\config.c	1178	< D > 恢复默认配置
+app\config.c	1180	<F5>  跳过当前测试
+app\config.c	1185	<F6>  保存到 %s           
+app\config.c	1187	<F6>  保存结果到U盘
+app\config.c	1252	正在保存配置...
+app\config.c	1258	正在恢复默认设置...
+app\config.c	1262	正在重启...
+app\display.c	176	  HEROSYS 内存老化测试 V
+app\display.c	181	时钟/温度: N/A              | 轮次   %
+app\display.c	182	L1 缓存:  N/A               | 测试   %
+app\display.c	183	L2 缓存:  N/A               | 测试 #
+app\display.c	184	L3 缓存:  N/A               | 测试项:
+app\display.c	185	内存容量: N/A               | 数据模式:
+app\display.c	187	轮次:          错误:                      |时间:           状态:  初始化
+app\display.c	191	错误:       ECC:
+app\display.c	212	 <ESC> 退出 <F1> 配置 <F2> 快速/完整 <F3> D3 <F4> D4 <F5> D5 <F11> 2-
+app\display.c	394	测试中
+app\display.c	513	按任意键关闭此提示 
+app\display.c	588	<Enter> 单步执行     
+app\display.c	722	需要加密狗！等待中...
+app\display.c	750	检测到CPU栈溢出 - 测试结果不可靠
+app\error.c	376	失败! 
+app\main.c	913	通过  
+tests\tests.c	79	[地址测试，逐位走1，无缓存]
+tests\tests.c	80	[地址测试，窗口内自身地址] 
+tests\tests.c	81	[地址测试，自身地址+窗口]   
+tests\tests.c	82	[总线压力，读写切换，随机] 
+tests\tests.c	83	[移动取反，全1和全0]           
+tests\tests.c	84	[移动取反，随机序列]          
+tests\tests.c	85	[移动取反，8位模式]            
+tests\tests.c	86	[取模20，随机模式]              
+tests\tests.c	87	[块移动]                            
+tests\tests.c	89	[移动取反，64位模式]          
+tests\tests.c	91	[移动取反，32位模式]          
+tests\tests.c	93	[位衰减测试，0/1/随机]         
+tests\tests.c	94	[Rowhammer，Blacksmith式]            
+tests\tests.c	130	[移动取反，随机 (

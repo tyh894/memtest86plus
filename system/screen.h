@@ -31,6 +31,20 @@ typedef union {
 
 typedef vga_char_t vga_buffer_t[SCREEN_HEIGHT][SCREEN_WIDTH];
 
+/*
+ * Glyph identifiers stored in the shadow buffer.
+ *  - 0 .. 255          : 8x16 glyphs from font_data (ASCII / CP437)
+ *  - 256 .. 0xFFFE     : 16x16 CJK glyphs from cn_font_data (id - 256)
+ *  - 0xFFFF            : continuation cell (right half of a CJK glyph)
+ */
+#define GLYPH_CN_BASE   256
+#define GLYPH_CONT      0xFFFF
+
+typedef struct {
+    uint16_t    id;
+    uint8_t     attr;
+} shadow_char_t;
+
 /**
  * Colours that can be used for the foreground or background.
  */
@@ -61,7 +75,7 @@ typedef struct {
 /**
  * BIOS/UEFI(GOP) agnostic framebuffer copy
  */
-extern vga_buffer_t shadow_buffer;
+extern shadow_char_t shadow_buffer[SCREEN_HEIGHT][SCREEN_WIDTH];
 
 /**
  * Modifier that can be added to any foreground colour.
@@ -106,19 +120,26 @@ void scroll_screen_region(int start_row, int start_col, int end_row, int end_col
  * Copy the contents of the specified region of the screen into the supplied
  * buffer.
  */
-void save_screen_region(int start_row, int start_col, int end_row, int end_col, uint16_t buffer[]);
+void save_screen_region(int start_row, int start_col, int end_row, int end_col, shadow_char_t buffer[]);
 
 /**
  * Restore the specified region of the screen from the supplied buffer.
  * This restores both text and colours.
  */
-void restore_screen_region(int start_row, int start_col, int end_row, int end_col, const uint16_t buffer[]);
+void restore_screen_region(int start_row, int start_col, int end_row, int end_col, const shadow_char_t buffer[]);
 
 /**
- * Write the supplied character to the specified screen location, using the
- * current foreground colour. Has no effect if the location is outside the
- * screen.
+ * Write the supplied character (glyph id 0..255) to the specified screen
+ * location, using the current foreground colour. Has no effect if the
+ * location is outside the screen.
  */
-void print_char(int row, int col, char ch);
+void print_char(int row, int col, int ch);
+
+/**
+ * Write the supplied Unicode code point to the specified screen location.
+ * CJK code points use a 16x16 glyph that occupies two character cells.
+ * Returns the column just past the character (col + display width).
+ */
+int print_codepoint(int row, int col, uint32_t codepoint);
 
 #endif // SCREEN_H

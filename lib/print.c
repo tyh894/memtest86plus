@@ -8,6 +8,7 @@
 
 #include "string.h"
 
+#include "lang.h"
 #include "print.h"
 
 //------------------------------------------------------------------------------
@@ -72,6 +73,62 @@ static int min_str_length(int field_length, bool pad)
     return (field_length > 0 && pad) ? field_length : 1;
 }
 
+/*
+ * Decodes the next UTF-8 sequence. Stray bytes that do not start a valid
+ * multi-byte sequence (e.g. single CP437 bytes >= 0x80) are returned as-is
+ * so legacy 8-bit strings still render via the CP437 glyphs.
+ */
+static uint32_t utf8_next(const char **ps)
+{
+    const uint8_t *s = (const uint8_t *)*ps;
+    uint8_t b = *s;
+    if (b == 0) {
+        *ps = NULL;
+        return 0;
+    }
+    s++;
+
+    int extra;
+    uint32_t cp;
+    if (b < 0x80) {
+        extra = 0;
+        cp = b;
+    } else if ((b & 0xe0) == 0xc0) {
+        extra = 1;
+        cp = b & 0x1f;
+    } else if ((b & 0xf0) == 0xe0) {
+        extra = 2;
+        cp = b & 0x0f;
+    } else if ((b & 0xf8) == 0xf0) {
+        extra = 3;
+        cp = b & 0x07;
+    } else {
+        /* Stray continuation byte or invalid lead byte. */
+        *ps = (const char *)s;
+        return b;
+    }
+    for (int i = 0; i < extra; i++) {
+        uint8_t c = *s;
+        if ((c & 0xc0) != 0x80) {
+            *ps = (const char *)s;
+            return b;
+        }
+        s++;
+        cp = (cp << 6) | (c & 0x3f);
+    }
+    *ps = (const char *)s;
+    return cp;
+}
+
+/*
+ * Display width of a code point in character cells (CJK ideographs and
+ * full-width punctuation occupy two cells).
+ */
+static int codepoint_width(uint32_t cp)
+{
+    return (cp >= 0x2E80 || cp == 0x2103) ? 2 : 1;  /* 0x2103 = '℃' */
+}
+
 static int print_in_field(int row, int col, const char buffer[], int buffer_length, int field_length, bool left)
 {
     bool reversed = false;
@@ -115,10 +172,26 @@ int printc(int row, int col, const char c)
 
 int prints(int row, int col, const char *str)
 {
+    str = lang_translate(str);
     while (*str) {
-        print_char(row, col++, *str++);
+        const char *next = str;
+        uint32_t cp = utf8_next(&next);
+        str = next;
+        col = print_codepoint(row, col, cp);
     }
     return col;
+}
+
+int str_width(const char *str)
+{
+    int width = 0;
+    while (*str) {
+        const char *next = str;
+        uint32_t cp = utf8_next(&next);
+        str = next;
+        width += codepoint_width(cp);
+    }
+    return width;
 }
 
 int printi(int row, int col, int value, int field_length, bool pad, bool left)
@@ -213,14 +286,19 @@ int printf(int row, int col, const char *fmt, ...)
 
 int vprintf(int row, int col, const char *fmt, va_list args)
 {
+    fmt = lang_translate(fmt);
     while (*fmt) {
         if (*fmt != '%') {
-            print_char(row, col++, *fmt++);
+            const char *next = fmt;
+            uint32_t cp = utf8_next(&next);
+            fmt = next;
+            col = print_codepoint(row, col, cp);
             continue;
         }
         fmt++;
         if (*fmt == '%') {
-            print_char(row, col++, *fmt++);
+            col = print_codepoint(row, col, '%');
+            fmt++;
             continue;
         }
 
@@ -261,7 +339,20 @@ int vprintf(int row, int col, const char *fmt, va_list args)
           } break;
           case 's': {
             const char *str = va_arg(args, char *);
-            col = print_in_field(row, col, str, strlen(str), length, left);
+            int str_len = str_width(str);
+            if (!left) {
+                while (length > str_len) {
+                    print_char(row, col++, ' ');
+                    length--;
+                }
+            }
+            col = prints(row, col, str);
+            if (left) {
+                while (length > str_len) {
+                    print_char(row, col++, ' ');
+                    length--;
+                }
+            }
           } break;
           case 'i':
             col = printi(row, col, va_arg(args, int), length, pad, left);
