@@ -30,6 +30,7 @@
 #include "build_version.h"
 
 #include "tests.h"
+#include "test.h"
 
 #include "display.h"
 #include "smp.h"
@@ -48,6 +49,25 @@
 #define POP_STAT_LAST_C  (POP_STAT_C + POP_STAT_W - 1)
 
 #define POP_STATUS_REGION  POP_STAT_R, POP_STAT_C, POP_STAT_LAST_R, POP_STAT_LAST_C
+
+// About (licensing) pop-up window. Same size as the config menu window.
+
+#define ABOUT_R         3
+#define ABOUT_C         21
+
+#define ABOUT_W         45
+#define ABOUT_H         18
+
+#define ABOUT_LAST_R    (ABOUT_R + ABOUT_H - 1)
+#define ABOUT_LAST_C    (ABOUT_C + ABOUT_W - 1)
+
+#define ABOUT_REGION    ABOUT_R, ABOUT_C, ABOUT_LAST_R, ABOUT_LAST_C
+
+// Scrolling ad banner (bottom screen row).
+
+#define ROW_MARQUEE     (SCREEN_HEIGHT - 1)
+
+#define MARQUEE_PERIOD  150     // milliseconds
 
 #define SPINNER_PERIOD  100     // milliseconds
 
@@ -80,6 +100,15 @@ static bool timed_update_done = false;  // update cycle status
 
 bool big_status_displayed = false;
 static shadow_char_t popup_status_save_buffer[POP_STAT_W * POP_STAT_H];
+static shadow_char_t about_save_buffer[ABOUT_W * ABOUT_H];
+
+// Scrolling ad banner text. Padded with spaces so the wrap-around has a gap.
+static const char marquee_text[] =
+    "                                                                                "
+    "www.herotest.cn 存储颗粒稳定性及频率测试软件，DDR5服务器内存专用测试平台，"
+    "SLT内存模组测试机台，受托测试服务。欢迎定制测试软件及机台。版权保护，请勿盗版。          ";
+
+static int marquee_offset = 0;  // horizontal scroll offset in columns
 
 //------------------------------------------------------------------------------
 // Variables
@@ -98,6 +127,8 @@ screen_palette_t palette = {BLUE, WHITE, WHITE, BLACK, WHITE, BLUE, BLACK};
 //------------------------------------------------------------------------------
 // Private Functions
 //------------------------------------------------------------------------------
+
+static void marquee_draw(void);
 
 static void set_screen_palette(screen_palette_t *mt_palette)
 {
@@ -122,6 +153,63 @@ static void set_screen_palette(screen_palette_t *mt_palette)
             .popup_background  = BLACK
         };
     }
+}
+
+//------------------------------------------------------------------------------
+// Test mode selection (F3 flash / F4 standard / F5 burn-in)
+//------------------------------------------------------------------------------
+
+extern int test_sequence[NUM_TEST_PATTERNS];
+
+static int test_mode = 3;   // 3 = F3 flash, 4 = F4 standard, 5 = F5 burn-in
+
+// Redraw the footer with the currently selected mode highlighted in red.
+static void footer_draw(void)
+{
+    set_foreground_colour(palette.footer_foreground);
+    set_background_colour(palette.footer_background);
+    clear_screen_region(ROW_FOOTER, 0, ROW_FOOTER, SCREEN_WIDTH - 1);
+    prints(ROW_FOOTER, 0, " <ESC> 退出 <F1> 配置 ");
+    set_foreground_colour(test_mode == 3 ? BLUE : palette.footer_foreground);
+    prints(ROW_FOOTER, 22, "<F3> 闪测 ");
+    set_foreground_colour(test_mode == 4 ? BLUE : palette.footer_foreground);
+    prints(ROW_FOOTER, 32, "<F4> 标准 ");
+    set_foreground_colour(test_mode == 5 ? BLUE : palette.footer_foreground);
+    prints(ROW_FOOTER, 42, "<F5> 老化 ");
+    if (scroll_lock) {
+        printc(ROW_FOOTER, SCREEN_WIDTH - 1, '*');
+    }
+    set_foreground_colour(palette.foreground);
+    set_background_colour(palette.background);
+}
+
+// Apply a test mode: F3 = tests 0-4, F4/F5 = all tests, F5 = 999 passes.
+static void set_test_mode(int mode)
+{
+    test_mode = mode;
+
+    bool enable_all = (mode != 3);
+    for (int i = 0; i < NUM_TEST_PATTERNS; i++) {
+        test_list[i].enabled = enable_all || (i <= 4);
+    }
+
+    // Rebuild the test sequence from the enabled flags and terminate it
+    // with NUM_TEST_PATTERNS so the main loop stops at the end of a pass.
+    int n = 0;
+    for (int i = 0; i < NUM_TEST_PATTERNS; i++) {
+        if (test_list[i].enabled) {
+            test_sequence[n++] = i;
+        }
+    }
+    for (int i = n; i < NUM_TEST_PATTERNS; i++) {
+        test_sequence[i] = NUM_TEST_PATTERNS;
+    }
+
+    // F5 burn-in loops 999 passes; F3/F4 run a single pass (also restores
+    // max_pass_num when switching back from F5).
+    max_pass_num = (mode == 5) ? 999 : 1;
+
+    footer_draw();
 }
 
 //------------------------------------------------------------------------------
@@ -150,6 +238,13 @@ void display_init(void)
     printc(0, 27, '+');
     set_foreground_colour(palette.foreground);
     set_background_colour(palette.background);
+
+    // Ad slot 1: licensing banner on the title row ("创芯界" in red).
+    prints(0, 37, "授权于 ");
+    set_foreground_colour(RED);
+    prints(0, 44, "创芯界");
+    set_foreground_colour(palette.foreground);
+    prints(0, 50, " 品牌内存产品测试服务");
     prints(1, 0, "时钟/温度: N/A              | 轮次   %");
     prints(2, 0, "L1 缓存:  N/A               | 测试   %");
     prints(3, 0, "L2 缓存:  N/A               | 测试 #");
@@ -178,13 +273,13 @@ void display_init(void)
     print_char(6, 42, 0xc2);
     print_char(8, 42, 0xc1);
 
-    set_foreground_colour(palette.footer_foreground);
-    set_background_colour(palette.footer_background);
-    clear_screen_region(ROW_FOOTER, 0, ROW_FOOTER, SCREEN_WIDTH - 1);
-    prints(ROW_FOOTER, 0, " <ESC> 退出 <F1> 配置 <F2> 快速/完整 <F3> D3 <F4> D4 <F5> D5 <F11> 2-");
+    // Footer with the mode keys; F3 (flash) is selected by default at boot.
+    set_test_mode(3);
 
     set_foreground_colour(palette.foreground);
     set_background_colour(palette.background);
+
+    marquee_draw();
 
     if (cpu_model) {
         display_cpu_model(cpu_model);
@@ -499,6 +594,166 @@ void restore_big_status(void)
     big_status_displayed = false;
 }
 
+//------------------------------------------------------------------------------
+// Ad slot 2: scrolling banner on the bottom screen row
+//------------------------------------------------------------------------------
+
+// Minimal UTF-8 decoder (the UI string literals are valid UTF-8).
+static int utf8_decode(const char *s, uint32_t *cp)
+{
+    uint8_t b = (uint8_t)s[0];
+
+    if (b < 0x80) {
+        *cp = b;
+        return 1;
+    }
+    if ((b & 0xE0) == 0xC0) {
+        *cp = ((uint32_t)(b & 0x1F) << 6) | (uint8_t)(s[1] & 0x3F);
+        return 2;
+    }
+    if ((b & 0xF0) == 0xE0) {
+        *cp = ((uint32_t)(b & 0x0F) << 12) | ((uint32_t)(s[1] & 0x3F) << 6) | (uint8_t)(s[2] & 0x3F);
+        return 3;
+    }
+    if ((b & 0xF8) == 0xF0) {
+        *cp = ((uint32_t)(b & 0x07) << 18) | ((uint32_t)(s[1] & 0x3F) << 12)
+            | ((uint32_t)(s[2] & 0x3F) << 6) | (uint8_t)(s[3] & 0x3F);
+        return 4;
+    }
+    *cp = b;
+    return 1;
+}
+
+// Display width of a code point in character cells (must match print.c).
+static int cp_width(uint32_t cp)
+{
+    return (cp >= 0x2E80 || cp == 0x2103) ? 2 : 1;  /* 0x2103 = '℃' */
+}
+
+static void marquee_draw(void)
+{
+    char buf[SCREEN_WIDTH * 3 + 1];
+    const char *p = marquee_text;
+    int col = 0;
+    int n = 0;
+
+    /* Advance to the first character that starts at or after the scroll
+     * offset, so a CJK glyph is never cut in half at the left edge. */
+    while (*p != '\0') {
+        uint32_t cp;
+        int len = utf8_decode(p, &cp);
+        if (col >= marquee_offset) {
+            break;
+        }
+        col += cp_width(cp);
+        p += len;
+    }
+
+    /* Copy characters until the 80-column window is full. */
+    col = 0;
+    while (*p != '\0' && n < (int)sizeof(buf) - 4) {
+        uint32_t cp;
+        int len = utf8_decode(p, &cp);
+        if (col + cp_width(cp) > SCREEN_WIDTH) {
+            break;
+        }
+        for (int i = 0; i < len; i++) {
+            buf[n++] = p[i];
+        }
+        col += cp_width(cp);
+        p += len;
+    }
+    buf[n] = '\0';
+
+    set_foreground_colour(palette.foreground);
+    set_background_colour(palette.background);
+    clear_screen_region(ROW_MARQUEE, 0, ROW_MARQUEE, SCREEN_WIDTH - 1);
+    prints(ROW_MARQUEE, 0, buf);
+}
+
+static void marquee_scroll(void)
+{
+    int total = 0;
+
+    for (const char *p = marquee_text; *p != '\0'; ) {
+        uint32_t cp;
+        int len = utf8_decode(p, &cp);
+        total += cp_width(cp);
+        p += len;
+    }
+
+    if (++marquee_offset >= total) {
+        marquee_offset = 0;
+    }
+    marquee_draw();
+}
+
+// Advance the marquee if MARQUEE_PERIOD has elapsed since the last step.
+// Called from every long-running loop so the banner never freezes.
+static void marquee_tick(uint64_t now)
+{
+    static uint64_t last_tick = 0;
+
+    if (scroll_lock) {
+        return;
+    }
+    if (last_tick == 0 || (now - last_tick) > ((uint64_t)MARQUEE_PERIOD * clks_per_msec)) {
+        last_tick = now;
+        marquee_scroll();
+    }
+}
+
+//------------------------------------------------------------------------------
+// F1 pop-up: licensing / product information window
+//------------------------------------------------------------------------------
+
+void about_popup(void)
+{
+    save_screen_region(ABOUT_REGION, about_save_buffer);
+    set_foreground_colour(WHITE);
+    set_background_colour(BLACK);  /* black background, like the config menu */
+    clear_screen_region(ABOUT_REGION);
+
+    bool exit_popup = false;
+    while (!exit_popup) {
+        set_foreground_colour(WHITE);
+        set_background_colour(BLACK);
+        prints(ABOUT_R+1, ABOUT_C+3, "关于 HeroTest");
+        prints(ABOUT_R+3, ABOUT_C+3, "HeroTest是专业的内存颗粒及模组测试");
+        prints(ABOUT_R+4, ABOUT_C+3, "系统的一部分。配合专用测试板可以");
+        prints(ABOUT_R+5, ABOUT_C+3, "完整的实现颗粒筛选，SLT模组测试，");
+        prints(ABOUT_R+6, ABOUT_C+3, "老化测试。此版本授权给 ");
+        set_foreground_colour(RED);
+        prints(ABOUT_R+6, ABOUT_C+26, "创芯界");
+        set_foreground_colour(WHITE);
+        prints(ABOUT_R+6, ABOUT_C+32, " 品牌");
+        prints(ABOUT_R+7, ABOUT_C+3, "在验货时使用。如需生产线使用的全功");
+        prints(ABOUT_R+8, ABOUT_C+3, "能版本，请另行购买。");
+        prints(ABOUT_R+11, ABOUT_C+3, "按任意键关闭此窗口");
+
+        if (enable_tty) {
+            tty_send_region(ABOUT_REGION);
+        }
+
+        // Keep the marquee scrolling while the popup is open.
+        if (clks_per_msec > 0) {
+            marquee_tick(get_tsc());
+        }
+
+        char input_key = get_key();
+        if (input_key != '\0') {
+            exit_popup = true;
+        }
+    }
+
+    restore_screen_region(ABOUT_REGION, about_save_buffer);
+    set_foreground_colour(palette.foreground);
+    set_background_colour(palette.background);
+    if (enable_tty) {
+        tty_send_region(ABOUT_REGION);
+    }
+}
+
 void check_input(void)
 {
     // printf(18,5, "%u", test_num);
@@ -520,7 +775,22 @@ void check_input(void)
         reboot();
         break;
       case '1':
-        config_menu(false);
+        about_popup();
+        break;
+      case '3':
+        set_test_mode(3);
+        bail = true;      // abort the current test immediately
+        restart = true;
+        break;
+      case '4':
+        set_test_mode(4);
+        bail = true;
+        restart = true;
+        break;
+      case '5':
+        set_test_mode(5);
+        bail = true;
+        restart = true;
         break;
       case ' ':
         set_scroll_lock(!scroll_lock);
@@ -648,6 +918,10 @@ void do_tick(int my_cpu)
         int hours = mins / 60; mins %= 60;
         display_run_time(hours, mins, secs);
 
+        // Scroll the ad banner on the bottom row. Paused while scroll lock
+        // is active (that mode reuses the bottom row for its own message).
+        marquee_tick(current_time);
+
         if (current_time > last_spinner_tick && (current_time - last_spinner_tick) > (200ULL * clks_per_msec)) {
             last_spinner_tick = current_time;
             update_spinner = true;
@@ -674,6 +948,9 @@ void do_tick(int my_cpu)
             while (1) {
                 serial_poll_rx();
                 uint64_t now = get_tsc();
+
+                // Keep the marquee scrolling while waiting for the dongle.
+                marquee_tick(now);
 
                 // Send heartbeat every 200ms
                 if (last_send_tick == 0 || (now - last_send_tick) > (200ULL * clks_per_msec)) {

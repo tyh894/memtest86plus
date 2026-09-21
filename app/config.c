@@ -1438,7 +1438,7 @@ void initial_config(void)
                 reboot();
                 break;
               case '1':
-                config_menu(true);
+                about_popup();
                 got_key = true;
                 break;
               case '2':

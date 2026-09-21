@@ -244,6 +244,8 @@ extern screen_palette_t palette;
 
 void display_init(void);
 
+void about_popup(void);
+
 void display_cpu_topology(void);
 
 void post_display_init(void);

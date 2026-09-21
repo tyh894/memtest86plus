@@ -57,16 +57,16 @@ test_pattern_t test_list[NUM_TEST_PATTERNS] = {
     { true,  ONE,    2,    6,    0, "[地址测试，自身地址+窗口]   "},
     { true,  PAR,    1,   32,    0, "[总线压力，读写切换，随机] "},
     { true,  PAR,    1,    6,    0, "[移动取反，全1和全0]           "},
-    { true,  PAR,    1,  128,    0, "[移动取反，随机序列]          "},
-    { true,  PAR,    1,    3,    0, "[移动取反，8位模式]            "},
-    { true,  PAR,    1,    8,    0, "[取模20，随机模式]              "},
-    { true,  PAR,    1,   81,    0, "[块移动]                            "},
+    { false,  PAR,    1,  128,    0, "[移动取反，随机序列]          "},
+    { false,  PAR,    1,    3,    0, "[移动取反，8位模式]            "},
+    { false,  PAR,    1,    8,    0, "[取模20，随机模式]              "},
+    { false,  PAR,    1,   81,    0, "[块移动]                            "},
 #if TESTWORD_WIDTH > 32
-    { true,  PAR,    1,    1,    0, "[移动取反，64位模式]          "},
+    { false,  PAR,    1,    1,    0, "[移动取反，64位模式]          "},
 #else
-    { true,  PAR,    1,    1,    0, "[移动取反，32位模式]          "},
+    { false,  PAR,    1,    1,    0, "[移动取反，32位模式]          "},
 #endif
-    { true,  PAR,   12,  120,    0, "[位衰减测试，0/1/随机]         "},
+    { false,  PAR,   12,  120,    0, "[位衰减测试，0/1/随机]         "},
     {false,  ONE,    1,   24,    0, "[Rowhammer，Blacksmith式]            "},
 };
 
