@@ -11,7 +11,9 @@
 # (simsun.ttc, ships with every zh-CN Windows). SimSun 12pt at 96 dpi is
 # exactly 16px and has embedded 16x16 CJK bitmaps, so with
 # SingleBitPerPixelGridFit the rendered glyphs are the classic crisp
-# DOS-style dot-matrix forms.
+# DOS-style dot-matrix forms.  The thumbs-up emoji (U+1F44D) is emitted
+# from a fixed hand-tuned bitmap (see below) because emoji fonts are
+# hollow outlines that threshold into unreadable thin lines at 16x16.
 
 param(
     [string]   $OutFile  = (Join-Path $PSScriptRoot "..\system\font_cn.c"),
@@ -29,9 +31,13 @@ Add-Type -AssemblyName System.Drawing
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $scanFiles = @(
-    Get-ChildItem (Join-Path $repoRoot "app")   -Include *.c, *.h -Recurse -File
-    Get-ChildItem (Join-Path $repoRoot "tests") -Include *.c, *.h -Recurse -File
-    Get-ChildItem (Join-Path $repoRoot "lib")   -Include *.c, *.h -Recurse -File
+    Get-ChildItem (Join-Path $repoRoot "app")    -Include *.c, *.h -Recurse -File
+    Get-ChildItem (Join-Path $repoRoot "tests")  -Include *.c, *.h -Recurse -File
+    Get-ChildItem (Join-Path $repoRoot "lib")    -Include *.c, *.h -Recurse -File
+    # system/ holds the SPD strings that use the thumbs-up emoji; skip the
+    # generated font itself so the scan does not feed on its own comments.
+    Get-ChildItem (Join-Path $repoRoot "system") -Include *.c, *.h -Recurse -File |
+        Where-Object { $_.Name -ne "font_cn.c" }
 )
 
 $codepoints = New-Object 'System.Collections.Generic.SortedSet[uint32]'
@@ -84,6 +90,19 @@ if ($null -eq $family) {
 $font = New-Object System.Drawing.Font($family, $FontSize, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Point)
 $fmt = [System.Drawing.StringFormat]::GenericTypographic
 
+# Emoji-capable font for emoji glyphs other than the fixed ones (e.g. future
+# U+1Fxxx code points).  GDI+ cannot draw colour glyphs, so Segoe UI Emoji
+# contributes its monochrome outline; the render loop below thickens it by
+# drawing at many offsets (a poor man's stroke) so the hollow outline
+# swells into a solid silhouette before thresholding.
+$emojiFamily = $null
+foreach ($name in @("Segoe UI Emoji", "Segoe UI Symbol")) {
+    try {
+        $emojiFamily = New-Object System.Drawing.FontFamily($name)
+        break
+    } catch { continue }
+}
+
 # Render on a 32x32 canvas with the em box at (8,8), then centre the ink
 # bounding box in the 16x16 cell.
 $canvas  = New-Object System.Drawing.Bitmap(32, 32)
@@ -103,7 +122,54 @@ foreach ($cp in $codepoints) {
         $v = $cp - 0x10000
         $str = [string]([char](0xD800 + ($v -shr 10))) + [string]([char](0xDC00 + ($v -band 0x3FF)))
     }
-    $gfx.DrawString($str, $font, $whiteBrush, [single]8.0, [single]8.0, $fmt)
+    if ($cp -eq 0x1F44D) {
+        # Fixed hand-tuned thumbs-up: emoji fonts are hollow outlines whose
+        # 16x16 threshold is unreadable, so emit the verified solid bitmap
+        # (derived from a stroked 320px Noto Emoji render) verbatim.
+        $rowsByCp[[uint32]$cp] = @(0x0000, 0x01C0, 0x01E0, 0x01E0, 0x03E0,
+                                   0x07F8, 0x0FFC, 0x7EFC, 0x7CFE, 0x73FE,
+                                   0x73FC, 0x78FC, 0x7EFC, 0x3FF8, 0x03F8,
+                                   0x0000)
+        continue
+    }
+    if ($cp -ge 0x1F000 -and $null -ne $emojiFamily) {
+        # Emoji: render anti-aliased at 4x resolution with Segoe UI Emoji.
+        # The glyph is hollow, so redraw it at every offset inside a disc
+        # (a poor man's stroke) to swell the outline into a solid
+        # silhouette, then threshold each 4x4 block at 50% coverage.
+        $ss = 4
+        $ecanvas = New-Object System.Drawing.Bitmap(32 * $ss, 32 * $ss)
+        $egfx = [System.Drawing.Graphics]::FromImage($ecanvas)
+        $egfx.PageUnit = [System.Drawing.GraphicsUnit]::Pixel
+        $egfx.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAlias
+        $efont = New-Object System.Drawing.Font($emojiFamily, [single](($FontSize + 2.0) * $ss), [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Point)
+        $rad = [int](2.5 * $ss)   # stroke radius in supersampled pixels
+        for ($oy = -$rad; $oy -le $rad; $oy++) {
+            for ($ox = -$rad; $ox -le $rad; $ox++) {
+                if ($ox * $ox + $oy * $oy -gt $rad * $rad) { continue }
+                $egfx.DrawString($str, $efont, $whiteBrush,
+                                 [single](8.0 * $ss + $ox), [single](8.0 * $ss + $oy), $fmt)
+            }
+        }
+        $efont.Dispose()
+        $egfx.Dispose()
+        for ($y = 0; $y -lt 32; $y++) {
+            for ($x = 0; $x -lt 32; $x++) {
+                $cov = 0
+                for ($iy = 0; $iy -lt $ss; $iy++) {
+                    for ($ix = 0; $ix -lt $ss; $ix++) {
+                        if ($ecanvas.GetPixel($x * $ss + $ix, $y * $ss + $iy).R -gt 0) { $cov++ }
+                    }
+                }
+                if ($cov -ge [int]($ss * $ss / 2)) {
+                    $gfx.FillRectangle($whiteBrush, $x, $y, 1, 1)
+                }
+            }
+        }
+        $ecanvas.Dispose()
+    } else {
+        $gfx.DrawString($str, $font, $whiteBrush, [single]8.0, [single]8.0, $fmt)
+    }
 
     # Find the ink bounding box.
     $minX = 99; $maxX = -1; $minY = 99; $maxY = -1
@@ -137,13 +203,7 @@ foreach ($cp in $codepoints) {
             }
         }
     } else {
-        if ($cp -eq 0x1F44D) {
-            # Hand-drawn fallback: YaHei/SimHei have no SMP emoji coverage.
-            $row = @(0x00E0, 0x01F0, 0x03F0, 0x03F0, 0x73F0, 0x7BF0, 0x7FF8, 0x7FFC,
-                     0x7FFC, 0x7FFC, 0x7FF8, 0x7FF0, 0x7FE0, 0x7FC0, 0x7F80, 0x3F00)
-        } else {
-            $emptyGlyphs += $str
-        }
+        $emptyGlyphs += $str
     }
     $rowsByCp[[uint32]$cp] = $row
 }

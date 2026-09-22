@@ -22,15 +22,18 @@ from PIL import Image, ImageDraw, ImageFont
 REPO = Path(__file__).resolve().parent.parent
 FONT_C = REPO / "system" / "font_cn.c"
 
-SCAN_DIRS = ["app", "tests", "lib"]
+SCAN_DIRS = ["app", "tests", "lib", "system"]
 
 COMMENT_RE = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
 
-# Hand-drawn 16x16 fallback for U+1F44D THUMBS UP SIGN: most CJK fonts
-# (WenQuanYi, YaHei) have no coverage for the SMP emoji plane.
-THUMBS_UP_1F44D = [0x00E0, 0x01F0, 0x03F0, 0x03F0, 0x73F0, 0x7BF0, 0x7FF8,
-                   0x7FFC, 0x7FFC, 0x7FFC, 0x7FF8, 0x7FF0, 0x7FE0, 0x7FC0,
-                   0x7F80, 0x3F00]
+# Fixed 16x16 bitmap for U+1F44D THUMBS UP SIGN. Emoji fonts (Noto Emoji,
+# Segoe UI Emoji) are hollow outlines; thresholding them at 16x16 leaves
+# unreadable thin lines. This solid silhouette comes from a 320px Noto
+# Emoji render thickened with a 26px stroke, downsampled with 50%
+# coverage. Emitted verbatim for deterministic output on every machine.
+THUMBS_UP_1F44D = [0x0000, 0x01C0, 0x01E0, 0x01E0, 0x03E0, 0x07F8, 0x0FFC,
+                   0x7EFC, 0x7CFE, 0x73FE, 0x73FC, 0x78FC, 0x7EFC, 0x3FF8,
+                   0x03F8, 0x0000]
 
 
 def collect_codepoints():
@@ -38,7 +41,9 @@ def collect_codepoints():
     cps = set()
     for d in SCAN_DIRS:
         for f in (REPO / d).rglob("*"):
-            if f.suffix not in (".c", ".h"):
+            # Skip the generated font itself so the scan does not feed on
+            # its own glyph comments.
+            if f.suffix not in (".c", ".h") or f.name == "font_cn.c":
                 continue
             text = COMMENT_RE.sub(" ", f.read_text(encoding="utf-8"))
             for ch in text:  # Python iterates full code points (no surrogates)
@@ -93,12 +98,15 @@ def main():
     rows_by_cp = {}
     empty = []
     for cp in codepoints:
+        if cp == 0x1F44D:
+            # Fixed bitmap: rendering emoji from a font is not viable (see
+            # THUMBS_UP_1F44D) and the result must not depend on the
+            # installed fonts.
+            rows_by_cp[cp] = list(THUMBS_UP_1F44D)
+            continue
         rows, ok = render_glyph(font, cp)
         if not ok:
-            if cp == 0x1F44D:
-                rows, ok = list(THUMBS_UP_1F44D), True
-            else:
-                empty.append(chr(cp))
+            empty.append(chr(cp))
         rows_by_cp[cp] = rows
 
     # Step 3: emit system/font_cn.c.

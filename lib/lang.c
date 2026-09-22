@@ -135,7 +135,7 @@ static const lang_entry_t lang_table[] = {
     { "L2 缓存:  N/A               | 测试 #",            "L2 Cache: N/A               | Test #" },
     { "L3 缓存:  N/A               | 测试项:",           "L3 Cache: N/A               | Testing:" },
     { "内存容量: N/A               | 数据模式:",         "Memory  : N/A               | Pattern:" },
-    { "轮次:          错误:                      |时间:           状态:  初始化", "Pass:           Err:                      |Time:           Status:Initial" },
+    { "轮次:           错误:                     |时间:           状态:  初始化", "Pass:           Err:                      |Time:           Status:Initial" },
     { "错误:       ECC:",                                "Err:        ECC:" },
     { " <ESC> 退出 <F1> 配置 <F2> 快速/完整 <F3> D3 <F4> D4 <F5> D5 <F11> 2-", " <ESC> Exit <F1> Configuration <F2> Quick/Full <F3> D3 <F4> D4 <F5> D5 <F11> 2-" },
 
