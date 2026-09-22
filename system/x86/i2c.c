@@ -85,6 +85,49 @@ static void force_smbus_release(void)
     __outb(SMBHSTSTS_INUSE_STS, SMBHSTSTS);
     usleep(1000);
 }
+
+// Some BIOSes store the raw JEDEC manufacturer ID ("0x1383") in the
+// SMBIOS Manufacturer / Part Number string instead of a vendor name.
+// Parse such a pure hex string into an ID, or return 0 if it isn't one.
+static uint16_t parse_jedec_hex(const char *s)
+{
+    if (s == NULL) {
+        return 0;
+    }
+    while (*s == ' ' || *s == '\t') {
+        s++;
+    }
+    if (s[0] != '0' || (s[1] != 'x' && s[1] != 'X')) {
+        return 0;
+    }
+
+    uint32_t val = 0;
+    int digits = 0;
+    for (const char *p = s + 2; *p != '\0'; p++) {
+        if (*p == ' ' || *p == '\t') {  // tolerate padding
+            continue;
+        }
+        int d;
+        if (*p >= '0' && *p <= '9') {
+            d = *p - '0';
+        } else if (*p >= 'a' && *p <= 'f') {
+            d = *p - 'a' + 10;
+        } else if (*p >= 'A' && *p <= 'F') {
+            d = *p - 'A' + 10;
+        } else {
+            return 0;  // real part numbers contain other characters
+        }
+        val = (val << 4) | (uint32_t)d;
+        if (++digits > 4) {
+            return 0;
+        }
+    }
+    if (digits == 0 || val == 0) {
+        return 0;
+    }
+    return (uint16_t)val;
+}
+
 int print_spd_startup_info(void)
 {
     uint8_t spdidx = 0, spd_line_idx = 0;
@@ -435,7 +478,28 @@ int print_spd_startup_info(void)
             if (partnum && (strncmp(partnum, "Undefined", 9) == 0 || strncmp(partnum, "Unknown", 7) == 0 || strncmp(partnum, "NO DIMM", 7) == 0)) {
                 partnum = NULL;
             }
-            
+
+            // A Manufacturer field such as "0x1383" is the raw JEDEC ID.
+            // Turn it into jedec_code so own-brand detection matches on the
+            // real ID instead of falling back to SKU keywords, and keep the
+            // bare hex string out of the SKU line.
+            uint16_t dmi_jedec = 0;
+            if (manuf != NULL) {
+                dmi_jedec = parse_jedec_hex(manuf);
+                if (dmi_jedec != 0) {
+                    manuf = NULL;
+                }
+            }
+            if (dmi_jedec == 0 && partnum != NULL) {
+                dmi_jedec = parse_jedec_hex(partnum);
+                if (dmi_jedec != 0) {
+                    partnum = NULL;
+                }
+            }
+            if (dmi_jedec != 0) {
+                curspd.jedec_code = dmi_jedec;
+            }
+
             int sku_idx = 0;
             
             // If manufacturer is Unknown, Undefined, or Noname, ignore it to prevent ugly prefixes

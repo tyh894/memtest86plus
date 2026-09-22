@@ -69,6 +69,98 @@ const char *get_jep106_name(uint16_t jedec_code)
     return NULL;
 }
 
+// --- Our own module brands (add entries in own_brands.h) ---
+
+struct own_brand {
+    uint16_t    id;     // JEDEC ID as written in own_brands.h
+    const char *name;   // display name / SKU fallback keyword
+};
+
+static const struct own_brand own_brands[] = {
+#define OWN_BRAND(id, name) { id, name },
+#include "own_brands.h"
+#undef OWN_BRAND
+};
+
+#define OWN_BRANDS_CNT (sizeof(own_brands) / sizeof(own_brands[0]))
+
+// Normalise a JEDEC manufacturer ID: strip the parity bit of each byte
+// (5-bit bank number + 7-bit ID code).
+static uint16_t norm_jedec_id(uint16_t id)
+{
+    return (uint16_t)((((id >> 8) & 0x1F) << 8) | (id & 0x7F));
+}
+
+// Match a jedec_code against our brands, ignoring parity bits and
+// accepting either byte order (0x5E10 == 0x105E, 0x9168 == 0x1168).
+static const struct own_brand *own_brand_by_jedec(uint16_t jedec_code)
+{
+    uint16_t key = norm_jedec_id(jedec_code);
+
+    for (uint32_t i = 0; i < OWN_BRANDS_CNT; i++) {
+        uint16_t id  = own_brands[i].id;
+        uint16_t rev = (uint16_t)((id << 8) | (id >> 8));
+        if (key == norm_jedec_id(id) || key == norm_jedec_id(rev)) {
+            return &own_brands[i];
+        }
+    }
+    return NULL;
+}
+
+// Case-insensitive substring search (tiny libc-free helper).
+static bool sku_has_brand(const char *sku, const char *name)
+{
+    for (; *sku != '\0'; sku++) {
+        size_t k = 0;
+        while (name[k] != '\0') {
+            char a = sku[k], b = name[k];
+            if (a >= 'A' && a <= 'Z') { a += 'a' - 'A'; }
+            if (b >= 'A' && b <= 'Z') { b += 'a' - 'A'; }
+            if (a != b) {
+                break;
+            }
+            k++;
+        }
+        if (name[k] == '\0') {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Recognise our modules from the SKU string when SPD is unreadable.
+static const struct own_brand *own_brand_by_sku(const char *sku)
+{
+    for (uint32_t i = 0; i < OWN_BRANDS_CNT; i++) {
+        if (sku_has_brand(sku, own_brands[i].name)) {
+            return &own_brands[i];
+        }
+    }
+    return NULL;
+}
+
+// Detect one of our own branded modules: JEDEC manufacturer ID first,
+// then SKU keyword fallback when no SPD could be read.
+static const struct own_brand *detect_own_brand(const spd_info *spdi)
+{
+    const struct own_brand *own = own_brand_by_jedec(spdi->jedec_code);
+
+    if (own == NULL && spdi->sku[0] != '\0'
+        && (spdi->jedec_code == 0x0 || spdi->jedec_code == 0xFFFF)) {
+        own = own_brand_by_sku(spdi->sku);
+    }
+    return own;
+}
+
+// Print a gold thumbs-up (U+1F44D) marking our own branded modules.
+static int print_own_marker(int row, int col)
+{
+    set_foreground_colour(BOLD + YELLOW);
+    col = prints(row, col, "👍");
+    set_foreground_colour(palette.foreground);
+    return col;
+}
+
 void print_spdi(spd_info spdi, uint8_t row)
 {
     uint8_t curcol;
@@ -83,10 +175,19 @@ void print_spdi(spd_info spdi, uint8_t row)
         return;
     }
 
-    if (spdi.slot_name[0] != '\0') {
-        curcol = printf(row, 0, " - %s: ", spdi.slot_name);
+    // Print Slot Index, Module Size, type & Max frequency (Jedec or XMP).
+    // Own-brand modules: gold thumbs-up replaces the leading dash.
+    const struct own_brand *own = detect_own_brand(&spdi);
+    if (own != NULL) {
+        curcol = prints(row, 0, " ");
+        curcol = print_own_marker(row, curcol);
     } else {
-        curcol = printf(row, 0, " - Slot %i: ", spdi.slot_num);
+        curcol = prints(row, 0, " -");
+    }
+    if (spdi.slot_name[0] != '\0') {
+        curcol = printf(row, curcol, " %s: ", spdi.slot_name);
+    } else {
+        curcol = printf(row, curcol, " Slot %i: ", spdi.slot_num);
     }
 
     if (spdi.module_size < 1024) {
@@ -124,47 +225,24 @@ void print_spdi(spd_info spdi, uint8_t row)
         curcol = prints(row, ++curcol, "XMP3");
     }
 
-    // Print Manufacturer from JEDEC106, or the raw JEDEC ID if not in the table
-    // Print Manufacturer from JEDEC106
-    bool manuf_printed = false;
-    uint16_t jedec_masked = spdi.jedec_code & 0x7FFF; // Mask out the MSB parity bit
-
-    // Force match for 0x105e just in case
-    if (spdi.jedec_code == 0x105e || jedec_masked == 0x105e) {
-        curcol = printf(row, ++curcol, "- HEROSYS ");
-        manuf_printed = true;
-    } else {
-        // for (int i = 0; i < JEP106_CNT; i++) {
-        //     if (jedec_masked == jep106[i].jedec_code) {
-        //         curcol = printf(row, ++curcol, "- %s ", jep106[i].name);
-        //         manuf_printed = true;
-        //         break;
-        //     }
-        // }
-    }
-
-    // If not present in JEDEC106, display raw JEDEC ID
-    if (!manuf_printed) {
-        if (spdi.jedec_code != 0xFFFF && spdi.jedec_code != 0x0) {
-            // Check for our custom HEROSYS code with parity bit stripped
-            if ((spdi.jedec_code & 0x7FFF) == 0x105E || spdi.jedec_code == 0x105E) {
-                curcol = prints(row, ++curcol, "- HEROSYS ");
-            } else {
-                curcol = printf(row, ++curcol, "- Unknown (0x%x) ", spdi.jedec_code);
-            }
-        } else if (spdi.jedec_code == 0xFFFF && spdi.sku[0] == '\0') {
-            // Do not print anything if we are using SMBIOS fallback and there is no SKU
-        } else if (spdi.jedec_code == 0xFFFF && spdi.sku[0] != '\0') {
-            curcol = prints(row, ++curcol, "- ");
+    // Print Manufacturer: our own brands already carry the thumbs-up
+    // at the start of the line, so just show the brand name here
+    if (own != NULL) {
+        curcol = printf(row, ++curcol, "%s ", own->name);
+    } else if (spdi.jedec_code != 0xFFFF && spdi.jedec_code != 0x0) {
+        // Unknown JEDEC ID: display it raw
+        curcol = printf(row, ++curcol, "- Unknown (0x%x) ", spdi.jedec_code);
+    } else if (spdi.sku[0] != '\0') {
+        // No usable JEDEC ID and not one of our brands (checked above)
+        if (spdi.jedec_code == 0x0) {
+            curcol = prints(row, ++curcol, "- Unknown ");
         } else {
-            // Fallback for jedec_code == 0 but sku is populated
-            if (spdi.sku[0] != '\0') {
-                curcol = prints(row, ++curcol, "- Unknown ");
-            } else {
-                curcol = prints(row, ++curcol, "- Noname ");
-            }
+            curcol = prints(row, ++curcol, "- ");
         }
+    } else if (spdi.jedec_code == 0x0) {
+        curcol = prints(row, ++curcol, "- Noname ");
     }
+    // (jedec == 0xFFFF with no SKU: SMBIOS fallback with no data, print nothing)
 
     // Print SKU
     if (spdi.sku[0] != '\0') {

@@ -233,7 +233,7 @@ void display_init(void)
     set_foreground_colour(palette.title_foreground);
     set_background_colour(palette.title_background);
     clear_screen_region(0, 0, 0, 27);
-    prints(0, 0, lang_cn ? " HEROSYS 内存老化测试V"MT_VERSION : " HEROSYS BURN-IN TESTV"MT_VERSION);
+    prints(0, 0, lang_cn ? " HEROSYS 内存老化测试 V"MT_VERSION : " HEROSYS BURN-IN TEST V"MT_VERSION);
     set_foreground_colour(RED);
     printc(0, 27, '+');
     set_foreground_colour(palette.foreground);

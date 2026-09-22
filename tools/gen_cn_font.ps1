@@ -55,7 +55,8 @@ foreach ($file in $scanFiles) {
             }
         }
         # 0x2103 = '℃' (full-width, lives below 0x2E80 but needs the CJK font)
-        if (($cp -ge 0x2E80 -and $cp -le 0x2FFFF -and $cp -ne 0xFFFD) -or $cp -eq 0x2103) {
+        # 0x1F44D = '👍' (SMP emoji, outside the normal CJK collection range)
+        if (($cp -ge 0x2E80 -and $cp -le 0x2FFFF -and $cp -ne 0xFFFD) -or $cp -eq 0x2103 -or $cp -eq 0x1F44D) {
             [void]$codepoints.Add($cp)
         }
     }
@@ -136,7 +137,13 @@ foreach ($cp in $codepoints) {
             }
         }
     } else {
-        $emptyGlyphs += $str
+        if ($cp -eq 0x1F44D) {
+            # Hand-drawn fallback: YaHei/SimHei have no SMP emoji coverage.
+            $row = @(0x00E0, 0x01F0, 0x03F0, 0x03F0, 0x73F0, 0x7BF0, 0x7FF8, 0x7FFC,
+                     0x7FFC, 0x7FFC, 0x7FF8, 0x7FF0, 0x7FE0, 0x7FC0, 0x7F80, 0x3F00)
+        } else {
+            $emptyGlyphs += $str
+        }
     }
     $rowsByCp[[uint32]$cp] = $row
 }

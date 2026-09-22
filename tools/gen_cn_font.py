@@ -26,6 +26,12 @@ SCAN_DIRS = ["app", "tests", "lib"]
 
 COMMENT_RE = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
 
+# Hand-drawn 16x16 fallback for U+1F44D THUMBS UP SIGN: most CJK fonts
+# (WenQuanYi, YaHei) have no coverage for the SMP emoji plane.
+THUMBS_UP_1F44D = [0x00E0, 0x01F0, 0x03F0, 0x03F0, 0x73F0, 0x7BF0, 0x7FF8,
+                   0x7FFC, 0x7FFC, 0x7FFC, 0x7FF8, 0x7FF0, 0x7FE0, 0x7FC0,
+                   0x7F80, 0x3F00]
+
 
 def collect_codepoints():
     """Step 1: strip comments, collect CJK code points from the sources."""
@@ -37,9 +43,7 @@ def collect_codepoints():
             text = COMMENT_RE.sub(" ", f.read_text(encoding="utf-8"))
             for ch in text:  # Python iterates full code points (no surrogates)
                 cp = ord(ch)
-                if 0x2E80 <= cp <= 0x2FFFF and cp != 0xFFFD:
-                    cps.add(cp)
-                elif cp == 0x2103:  # '℃'
+                if (0x2E80 <= cp <= 0x2FFFF or cp in (0x2103, 0x1F44D)) and cp != 0xFFFD:
                     cps.add(cp)
     if not cps:
         sys.exit("No CJK characters found in the scanned sources.")
@@ -91,7 +95,10 @@ def main():
     for cp in codepoints:
         rows, ok = render_glyph(font, cp)
         if not ok:
-            empty.append(chr(cp))
+            if cp == 0x1F44D:
+                rows, ok = list(THUMBS_UP_1F44D), True
+            else:
+                empty.append(chr(cp))
         rows_by_cp[cp] = rows
 
     # Step 3: emit system/font_cn.c.
