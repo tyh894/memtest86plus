@@ -69,6 +69,15 @@
 
 #define MARQUEE_PERIOD  150     // milliseconds
 
+// Red warning marquee drawn on the footer row, in the empty space right of
+// the "<F5> 老化" label.  Always visible; scrolls faster than the ad banner
+// on the row below it.
+
+#define WARN_COL        52                        // first column behind "<F5> 老化 "
+#define WARN_WIDTH      (SCREEN_WIDTH - 1 - WARN_COL)   // keep col 79 for the '*' lock marker
+
+#define MARQUEE_WARN_PERIOD  80     // milliseconds
+
 #define SPINNER_PERIOD  100     // milliseconds
 
 #define NUM_SPIN_STATES 4
@@ -110,6 +119,15 @@ static const char marquee_text[] =
 
 static int marquee_offset = 0;  // horizontal scroll offset in columns
 
+// 页脚 "<F5> 老化" 右侧空白区域的红色警示走马灯。Padded with spaces so the
+// wrap-around has a gap.
+static const char marquee_warn_text[] =
+    "                              "
+    "当前为非专业测试机台，ECC测试可能有偏差"
+    "                              ";
+
+static int marquee_warn_offset = 0;
+
 //------------------------------------------------------------------------------
 // Variables
 //------------------------------------------------------------------------------
@@ -129,6 +147,7 @@ screen_palette_t palette = {BLUE, WHITE, WHITE, BLACK, WHITE, BLUE, BLACK};
 //------------------------------------------------------------------------------
 
 static void marquee_draw(void);
+static void marquee_warn_draw(void);
 
 static void set_screen_palette(screen_palette_t *mt_palette)
 {
@@ -210,6 +229,7 @@ static void set_test_mode(int mode)
     max_pass_num = (mode == 5) ? 999 : 1;
 
     footer_draw();
+    marquee_warn_draw();    // redraw the warning marquee in the footer gap
 }
 
 //------------------------------------------------------------------------------
@@ -630,10 +650,12 @@ static int cp_width(uint32_t cp)
     return (cp >= 0x2E80 || cp == 0x2103) ? 2 : 1;  /* 0x2103 = '℃' */
 }
 
-static void marquee_draw(void)
+// Fill buf with the visible window (width columns) of a scrolling text,
+// starting at the given column offset and never splitting a CJK glyph at
+// either edge.
+static void marquee_window(const char *text, int offset, int width, char *buf)
 {
-    char buf[SCREEN_WIDTH * 3 + 1];
-    const char *p = marquee_text;
+    const char *p = text;
     int col = 0;
     int n = 0;
 
@@ -642,19 +664,19 @@ static void marquee_draw(void)
     while (*p != '\0') {
         uint32_t cp;
         int len = utf8_decode(p, &cp);
-        if (col >= marquee_offset) {
+        if (col >= offset) {
             break;
         }
         col += cp_width(cp);
         p += len;
     }
 
-    /* Copy characters until the 80-column window is full. */
+    /* Copy characters until the window is full. */
     col = 0;
-    while (*p != '\0' && n < (int)sizeof(buf) - 4) {
+    while (*p != '\0' && n < width * 3 - 4) {
         uint32_t cp;
         int len = utf8_decode(p, &cp);
-        if (col + cp_width(cp) > SCREEN_WIDTH) {
+        if (col + cp_width(cp) > width) {
             break;
         }
         for (int i = 0; i < len; i++) {
@@ -664,28 +686,51 @@ static void marquee_draw(void)
         p += len;
     }
     buf[n] = '\0';
+}
 
+// Total display width of a scrolling text in character cells.
+static int marquee_width(const char *text)
+{
+    int total = 0;
+
+    for (const char *p = text; *p != '\0'; ) {
+        uint32_t cp;
+        int len = utf8_decode(p, &cp);
+        total += cp_width(cp);
+        p += len;
+    }
+    return total;
+}
+
+static void marquee_draw(void)
+{
+    char buf[SCREEN_WIDTH * 3 + 1];
+
+    marquee_window(marquee_text, marquee_offset, SCREEN_WIDTH, buf);
     set_foreground_colour(palette.foreground);
     set_background_colour(palette.background);
     clear_screen_region(ROW_MARQUEE, 0, ROW_MARQUEE, SCREEN_WIDTH - 1);
     prints(ROW_MARQUEE, 0, buf);
 }
 
-static void marquee_scroll(void)
+// Red warning marquee: drawn on the footer row in the empty space right of
+// the "<F5> 老化" label.  Always visible.  Only the columns behind the label
+// are touched so the footer key labels and the '*' scroll-lock marker (last
+// column) are preserved.
+static void marquee_warn_draw(void)
 {
-    int total = 0;
+    char buf[SCREEN_WIDTH * 3 + 1];
 
-    for (const char *p = marquee_text; *p != '\0'; ) {
-        uint32_t cp;
-        int len = utf8_decode(p, &cp);
-        total += cp_width(cp);
-        p += len;
-    }
+    set_foreground_colour(palette.footer_foreground);
+    set_background_colour(palette.footer_background);
+    clear_screen_region(ROW_FOOTER, WARN_COL, ROW_FOOTER, WARN_COL + WARN_WIDTH - 1);
 
-    if (++marquee_offset >= total) {
-        marquee_offset = 0;
-    }
-    marquee_draw();
+    marquee_window(marquee_warn_text, marquee_warn_offset, WARN_WIDTH, buf);
+    set_foreground_colour(RED);
+    prints(ROW_FOOTER, WARN_COL, buf);
+
+    set_foreground_colour(palette.foreground);
+    set_background_colour(palette.background);
 }
 
 // Advance the marquee if MARQUEE_PERIOD has elapsed since the last step.
@@ -693,13 +738,24 @@ static void marquee_scroll(void)
 static void marquee_tick(uint64_t now)
 {
     static uint64_t last_tick = 0;
+    static uint64_t warn_last_tick = 0;
 
     if (scroll_lock) {
         return;
     }
     if (last_tick == 0 || (now - last_tick) > ((uint64_t)MARQUEE_PERIOD * clks_per_msec)) {
         last_tick = now;
-        marquee_scroll();
+        if (++marquee_offset >= marquee_width(marquee_text)) {
+            marquee_offset = 0;
+        }
+        marquee_draw();
+    }
+    if (warn_last_tick == 0 || (now - warn_last_tick) > ((uint64_t)MARQUEE_WARN_PERIOD * clks_per_msec)) {
+        warn_last_tick = now;
+        if (++marquee_warn_offset >= marquee_width(marquee_warn_text)) {
+            marquee_warn_offset = 0;
+        }
+        marquee_warn_draw();
     }
 }
 
