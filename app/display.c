@@ -242,7 +242,7 @@ void display_init(void)
     // Ad slot 1: licensing banner on the title row ("创芯界" in red).
     prints(0, 37, "授权于 ");
     set_foreground_colour(RED);
-    prints(0, 44, "创芯界");
+    prints(0, 44, "兆储");
     set_foreground_colour(palette.foreground);
     prints(0, 50, " 品牌内存产品测试服务");
     prints(1, 0, "时钟/温度: N/A              | 轮次   %");

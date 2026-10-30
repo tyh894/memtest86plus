@@ -6,6 +6,13 @@
 #
 # Usage (from the repository root):
 #   powershell -ExecutionPolicy Bypass -File tools\gen_cn_font.ps1
+#   powershell -ExecutionPolicy Bypass -File tools\gen_cn_font.ps1 -Full
+#
+# -Full emits the complete charset (every ideograph U+4E00..U+9FA5 plus CJK
+# punctuation, full-width forms and the special symbols) instead of only the
+# characters used by the current sources, so UI strings can be edited freely
+# without ever regenerating the font.  Takes a few minutes and produces a
+# ~660 KB font table.
 #
 # Requirements: Windows with GDI+ (System.Drawing) and the SimSun font
 # (simsun.ttc, ships with every zh-CN Windows). SimSun 12pt at 96 dpi is
@@ -18,7 +25,8 @@
 param(
     [string]   $OutFile  = (Join-Path $PSScriptRoot "..\system\font_cn.c"),
     [string]   $FontName = "Microsoft YaHei",
-    [double]   $FontSize = 12.0
+    [double]   $FontSize = 12.0,
+    [switch]   $Full
 )
 
 $ErrorActionPreference = "Stop"
@@ -68,6 +76,16 @@ foreach ($file in $scanFiles) {
     }
 }
 
+if ($Full) {
+    # Complete charset: every ideograph of the CJK Unified Ideographs
+    # block, CJK punctuation, the full-width ASCII forms and the special
+    # symbols, merged with whatever the scan found (rare extension chars).
+    foreach ($cp in @(0x2103, 0x1F44D))               { [void]$codepoints.Add($cp) }
+    for ($cp = 0x3001; $cp -le 0x301F; $cp++)         { [void]$codepoints.Add($cp) }
+    for ($cp = 0xFF01; $cp -le 0xFF5E; $cp++)         { [void]$codepoints.Add($cp) }
+    for ($cp = 0x4E00; $cp -le 0x9FA5; $cp++)         { [void]$codepoints.Add($cp) }
+}
+
 if ($codepoints.Count -eq 0) {
     Write-Error "No CJK characters found in the scanned sources."
 }
@@ -111,16 +129,24 @@ $gfx.PageUnit = [System.Drawing.GraphicsUnit]::Pixel
 $gfx.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::SingleBitPerPixelGridFit
 $whiteBrush = [System.Drawing.Brushes]::White
 
+# Reused LockBits readback buffer (32x32 pixels, Format32bppArgb -> 128 byte
+# stride).  GetPixel is a slow .NET call; with the full 20k-glyph charset it
+# would dominate the run time by an order of magnitude.
+$lockRect = New-Object System.Drawing.Rectangle(0, 0, 32, 32)
+$lockPF   = [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+$pxBytes  = New-Object byte[] (32 * 32 * 4)
+
 $emptyGlyphs = @()
 $rowsByCp = @{}
 
 foreach ($cp in $codepoints) {
     $gfx.Clear([System.Drawing.Color]::Black)
-    $str = [string][char]$cp
     if ($cp -gt 0xFFFF) {
         # Beyond-BMP code point: build from surrogate pair.
         $v = $cp - 0x10000
         $str = [string]([char](0xD800 + ($v -shr 10))) + [string]([char](0xDC00 + ($v -band 0x3FF)))
+    } else {
+        $str = [string][char]$cp
     }
     if ($cp -eq 0x1F44D) {
         # Fixed hand-tuned thumbs-up: emoji fonts are hollow outlines whose
@@ -171,11 +197,18 @@ foreach ($cp in $codepoints) {
         $gfx.DrawString($str, $font, $whiteBrush, [single]8.0, [single]8.0, $fmt)
     }
 
-    # Find the ink bounding box.
+    # Read the canvas back in one LockBits copy.
+    $bd = $canvas.LockBits($lockRect, [System.Drawing.Imaging.ImageLockMode]::ReadOnly, $lockPF)
+    [System.Runtime.InteropServices.Marshal]::Copy($bd.Scan0, $pxBytes, 0, $pxBytes.Length)
+    $stride = $bd.Stride
+    $canvas.UnlockBits($bd)
+
+    # Find the ink bounding box (Format32bppArgb: R is byte 2 of each pixel).
     $minX = 99; $maxX = -1; $minY = 99; $maxY = -1
     for ($y = 0; $y -lt 32; $y++) {
+        $ro = $y * $stride
         for ($x = 0; $x -lt 32; $x++) {
-            if ($canvas.GetPixel($x, $y).R -gt 127) {
+            if ($pxBytes[$ro + 4 * $x + 2] -gt 127) {
                 if ($x -lt $minX) { $minX = $x }
                 if ($x -gt $maxX) { $maxX = $x }
                 if ($y -lt $minY) { $minY = $y }
@@ -194,10 +227,11 @@ foreach ($cp in $codepoints) {
         for ($y = 0; $y -lt 32; $y++) {
             $ty = $y + $dy
             if ($ty -lt 0 -or $ty -gt 15) { continue }
+            $ro = $y * $stride
             for ($x = 0; $x -lt 32; $x++) {
                 $tx = $x + $dx
                 if ($tx -lt 0 -or $tx -gt 15) { continue }
-                if ($canvas.GetPixel($x, $y).R -gt 127) {
+                if ($pxBytes[$ro + 4 * $x + 2] -gt 127) {
                     $row[$ty] = $row[$ty] -bor (0x8000 -shr $tx)
                 }
             }
@@ -222,6 +256,12 @@ if ($emptyGlyphs.Count -gt 0) {
 $n = $codepoints.Count
 $cpList  = ($codepoints | ForEach-Object { "0x{0:X4}" -f $_ }) -join ", "
 
+if ($Full) {
+    $coverage = "Full CJK font: every ideograph U+4E00..U+9FA5 plus CJK punctuation, the full-width forms and the special symbols ($n glyphs, incl. any extra code points found in the sources). UI strings can be edited freely without regenerating."
+} else {
+    $coverage = "Covers the $n CJK / full-width characters used by the UI string literals."
+}
+
 $glyphBlocks = New-Object System.Text.StringBuilder
 $i = 0
 foreach ($cp in $codepoints) {
@@ -236,7 +276,7 @@ $cSource = @"
 //
 // 16x16 CJK bitmap font. GENERATED by tools/gen_cn_font.ps1 -- DO NOT EDIT.
 // Source font: $FontName $($FontSize)pt (16px @ 96dpi), grid-fitted.
-// Covers the $n CJK / full-width characters used by the UI string literals.
+// $coverage
 
 #include <stdint.h>
 
